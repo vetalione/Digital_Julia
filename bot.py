@@ -20,9 +20,11 @@ from telegram.ext import (
 from openai import OpenAI
 
 from config import (
-    TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, CONSULTATION_URL, COURSE_URL,
+    TELEGRAM_BOT_TOKEN, OPENAI_API_KEY,
     TRIBUTE_PRODUCT_LINK, PORT,
 )
+
+JULIA_TG = "https://t.me/JFilipenko"
 from prompts import (
     DIAGNOSIS_TIPS_PROMPT,
     SCENARIO_SYSTEM_PROMPT,
@@ -81,8 +83,9 @@ def get_user(user_id: int) -> dict:
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 Сгенерировать сценарий Reels", callback_data="generate_scenario")],
-        [InlineKeyboardButton("📋 Записаться на консультацию к Юле", url=CONSULTATION_URL)],
-        [InlineKeyboardButton("🎓 Посмотреть курс Юли", url=COURSE_URL)],
+        [InlineKeyboardButton("🎓 Посмотреть программу курса", callback_data="show_course")],
+        [InlineKeyboardButton("📋 Запись на консультацию — 200$", url=JULIA_TG)],
+        [InlineKeyboardButton("🎤 Попасть на разбор — 100$", url=JULIA_TG)],
         [InlineKeyboardButton("🔄 Пройти диагностику заново", callback_data="restart_diagnosis")],
     ])
 
@@ -91,8 +94,9 @@ def after_scenario_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Сгенерировать заново", callback_data="regenerate")],
         [InlineKeyboardButton("⚙️ Изменить настройки", callback_data="change_settings")],
-        [InlineKeyboardButton("📋 Консультация с Юлей", url=CONSULTATION_URL)],
-        [InlineKeyboardButton("🎓 Курс Юли", url=COURSE_URL)],
+        [InlineKeyboardButton("🎓 Посмотреть программу курса", callback_data="show_course")],
+        [InlineKeyboardButton("📋 Запись на консультацию — 200$", url=JULIA_TG)],
+        [InlineKeyboardButton("🎤 Попасть на разбор — 100$", url=JULIA_TG)],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")],
     ])
 
@@ -280,7 +284,29 @@ async def main_menu_handler(update: Update, context) -> int:
     query = update.callback_query
     await query.answer()
 
-    if query.data == "generate_scenario":
+    if query.data == "show_course":
+        await query.edit_message_text(
+            "🎬💋 **Снимите это немедленно!** — курс по Reels, который реально приносит клиентов\n\n"
+            "За 4 недели ты пройдёшь путь от «снимаю хаотично» до системы, которая работает на тебя 24/7:\n\n"
+            "✅ Разберёшься в алгоритмах Instagram и прогреешь аккаунт правильно\n\n"
+            "✅ Найдёшь свой архетип и поймёшь, КАК говорить с аудиторией — так, чтобы покупали\n\n"
+            "✅ Получишь готовые промты для ChatGPT: идеи, сценарии, хуки, CTA — за минуты\n\n"
+            "✅ Освоишь 34 формата Reels и научишься балансировать охваты, экспертность и продажи\n\n"
+            "✅ Узнаешь, как собирать лиды прямо из роликов — через кодовые слова, автоворонки и ботов\n\n"
+            "✅ Получишь модуль по монтажу от эксперта: свет, цвет, субтитры, ИИ-инструменты — 7 уроков\n\n"
+            "✅ 4 живых созвона с Юлей — задашь вопросы и разберёшь свои ролики\n\n"
+            "💡 Реальный кейс: $1500 с 3000 просмотров. Не магия — система.\n\n"
+            "🏆 Бонус: челлендж «30 Reels за 30 дней» с призами — консультация, разбор аккаунта, доступ в закрытый клуб.\n\n"
+            "Хватит кричать в подушку — пора, чтобы тебя услышали! 🚀",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✉️ Написать Юле чтобы занять место", url=JULIA_TG)],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")],
+            ]),
+        )
+        return MAIN_MENU
+
+    elif query.data == "generate_scenario":
         await query.edit_message_text(
             "🎬 **Генерация сценария Reels**\n\n"
             "У тебя уже есть задумка или идея для ролика?\n\n"
@@ -606,6 +632,32 @@ async def after_scenario_handler(update: Update, context) -> int:
                 text=scenario,
                 reply_markup=after_scenario_keyboard(),
             )
+        return SHOW_SCENARIO
+
+    elif query.data == "show_course":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=(
+                "🎥💋 **Снимите это немедленно!** — курс по Reels, который реально приносит клиентов\n\n"
+                "За 4 недели ты пройдёшь путь от «снимаю хаотично» до системы, которая работает на тебя 24/7:\n\n"
+                "✅ Разберёшься в алгоритмах Instagram и прогреешь аккаунт правильно\n\n"
+                "✅ Найдёшь свой архетип и поймёшь, КАК говорить с аудиторией — так, чтобы покупали\n\n"
+                "✅ Получишь готовые промты для ChatGPT: идеи, сценарии, хуки, CTA — за минуты\n\n"
+                "✅ Освоишь 34 формата Reels и научишься балансировать охваты, экспертность и продажи\n\n"
+                "✅ Узнаешь, как собирать лиды прямо из роликов — через кодовые слова, автоворонки и ботов\n\n"
+                "✅ Получишь модуль по монтажу от эксперта: свет, цвет, субтитры, ИИ-инструменты — 7 уроков\n\n"
+                "✅ 4 живых созвона с Юлей — задашь вопросы и разберёшь свои ролики\n\n"
+                "💡 Реальный кейс: $1500 с 3000 просмотров. Не магия — система.\n\n"
+                "🏆 Бонус: челлендж «30 Reels за 30 дней» с призами — консультация, разбор аккаунта, доступ в закрытый клуб.\n\n"
+                "Хватит кричать в подушку — пора, чтобы тебя услышали! 🚀"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✉️ Написать Юле чтобы занять место", url=JULIA_TG)],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")],
+            ]),
+        )
         return SHOW_SCENARIO
 
     elif query.data == "change_settings":
