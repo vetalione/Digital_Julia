@@ -133,7 +133,7 @@ async def call_ai(system_prompt: str, user_prompt: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=2000,
+            max_completion_tokens=2000,
             temperature=0.8,
         )
         return response.choices[0].message.content or "Не удалось сгенерировать ответ."
@@ -145,15 +145,15 @@ async def call_ai(system_prompt: str, user_prompt: str) -> str:
 async def search_news(user_prompt: str) -> str:
     """Поиск реальных новостей через модель с веб-поиском."""
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model="gpt-5-search-api",
-            messages=[
+            input=[
                 {"role": "system", "content": NEWS_SEARCH_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            web_search_options={"search_context_size": "medium"},
+            tools=[{"type": "web_search_preview", "search_context_size": "medium"}],
         )
-        return response.choices[0].message.content or "Не удалось найти новости."
+        return response.output_text or "Не удалось найти новости."
     except Exception as e:
         logger.error(f"News search error: {e}")
         return "⚠️ Не удалось найти новости. Попробуйте ещё раз."
