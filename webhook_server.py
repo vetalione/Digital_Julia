@@ -1,13 +1,15 @@
 """
-Веб-сервер для приёма вебхуков от Tribute.
+Веб-сервер для приёма вебхуков от Tribute и Telegram.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
 
 from aiohttp import web
+from telegram import Update
 
 from config import TRIBUTE_API_KEY
 from db import grant_access, revoke_access
@@ -80,9 +82,25 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "healthy"})
 
 
-def create_webhook_app() -> web.Application:
+async def handle_telegram_webhook(request: web.Request) -> web.Response:
+    """Обработка входящих апдейтов от Telegram."""
+    ptb_app = request.app["ptb_app"]
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(status=400)
+
+    update = Update.de_json(data, ptb_app.bot)
+    # Fire-and-forget: не ждём завершения обработки, сразу возвращаем 200
+    asyncio.ensure_future(ptb_app.process_update(update))
+    return web.Response(status=200)
+
+
+def create_webhook_app(ptb_app) -> web.Application:
     """Создаёт aiohttp приложение с маршрутами."""
     app = web.Application()
+    app["ptb_app"] = ptb_app
     app.router.add_post("/webhook/tribute", handle_tribute_webhook)
+    app.router.add_post("/webhook", handle_telegram_webhook)
     app.router.add_get("/health", handle_health)
     return app
