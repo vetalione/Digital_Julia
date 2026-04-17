@@ -177,7 +177,6 @@ async def search_news(user_prompt: str) -> str:
                 {"role": "system", "content": NEWS_SEARCH_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            tools=[{"type": "web_search_preview", "search_context_size": "medium"}],
         )
         return response.output_text or "Не удалось найти новости."
     except Exception as e:
