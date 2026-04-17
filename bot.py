@@ -150,6 +150,18 @@ async def safe_send_bot(bot, chat_id: int, text: str, reply_markup=None, parse_m
             await bot.send_message(chat_id=chat_id, text=part, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
+def clean_md_for_telegram(text: str) -> str:
+    """Убирает из GPT-ответа Markdown-элементы, которые Telegram не поддерживает."""
+    import re
+    # Убираем ### ## # заголовки → просто жирный текст
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
+    # Убираем горизонтальные линии ---
+    text = re.sub(r'^-{3,}$', '', text, flags=re.MULTILINE)
+    # Убираем ``` блоки кода (оставляем содержимое)
+    text = re.sub(r'```[a-z]*\n?', '', text)
+    return text.strip()
+
+
 async def call_ai(system_prompt: str, user_prompt: str) -> str:
     """Вызов OpenAI для генерации ответа."""
     try:
@@ -162,7 +174,8 @@ async def call_ai(system_prompt: str, user_prompt: str) -> str:
             max_completion_tokens=2000,
             temperature=0.8,
         )
-        return response.choices[0].message.content or "Не удалось сгенерировать ответ."
+        result = response.choices[0].message.content or "Не удалось сгенерировать ответ."
+        return clean_md_for_telegram(result)
     except Exception as e:
         logger.error(f"OpenAI error: {e}")
         return "⚠️ Произошла ошибка при генерации. Попробуйте ещё раз."
@@ -184,6 +197,12 @@ async def search_news(user_prompt: str) -> str:
         logger.error(f"News search error: {e}")
         return "⚠️ Не удалось найти новости. Попробуйте ещё раз."
 
+def parse_news_items(text: str) -> list[str]:
+    """Разбивает текст новостей на отдельные пункты по нумерации 1. 2. 3."""
+    import re
+    items = re.split(r'\n(?=\d+\.\s)', text.strip())
+    items = [item.strip() for item in items if item.strip()]
+    return items if items else [text.strip()]
 
 async def transcribe_voice(file_path: str) -> str:
     """Транскрибация голосового сообщения через Whisper."""
@@ -473,7 +492,7 @@ async def choose_style(update: Update, context) -> int:
             f"Целевая аудитория: {ud['audience']}"
         )
         news_text = await search_news(news_prompt)
-        ud["news_list"] = news_text.strip().splitlines()
+        ud["news_list"] = parse_news_items(news_text)
 
         news_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("1️⃣", callback_data="news_0"),
@@ -515,7 +534,7 @@ async def choose_news(update: Update, context) -> int:
             "\n".join(ud.get("news_list", []))
         )
         news_text = await search_news(news_prompt)
-        ud["news_list"] = news_text.strip().splitlines()
+        ud["news_list"] = parse_news_items(news_text)
 
         news_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("1️⃣", callback_data="news_0"),
@@ -592,7 +611,6 @@ async def choose_duration(update: Update, context) -> int:
     await safe_send_bot(
         context.bot, query.from_user.id, scenario,
         reply_markup=after_scenario_keyboard(),
-        parse_mode=None,
     )
 
     return SHOW_SCENARIO
@@ -626,7 +644,6 @@ async def after_scenario_handler(update: Update, context) -> int:
         await safe_send_bot(
             context.bot, query.from_user.id, scenario,
             reply_markup=after_scenario_keyboard(),
-            parse_mode=None,
         )
         return SHOW_SCENARIO
 
