@@ -773,8 +773,6 @@ def main():
             "Conflict error on startup: another bot instance is running. "
             "Shutting down gracefully. Error: %s", e
         )
-    finally:
-        loop.run_until_complete(runner.cleanup())
 
 
 if __name__ == "__main__":
