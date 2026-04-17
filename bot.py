@@ -124,6 +124,32 @@ def duration_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+async def safe_send(target, text: str, reply_markup=None, parse_mode="Markdown"):
+    """Отправляет сообщение, разбивая на части если > 4000 символов."""
+    if len(text) <= 4000:
+        await target.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return
+    parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+    for i, part in enumerate(parts):
+        if i < len(parts) - 1:
+            await target.reply_text(part, parse_mode=parse_mode)
+        else:
+            await target.reply_text(part, parse_mode=parse_mode, reply_markup=reply_markup)
+
+
+async def safe_send_bot(bot, chat_id: int, text: str, reply_markup=None, parse_mode="Markdown"):
+    """Отправляет через bot.send_message, разбивая на части."""
+    if len(text) <= 4000:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return
+    parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+    for i, part in enumerate(parts):
+        if i < len(parts) - 1:
+            await bot.send_message(chat_id=chat_id, text=part, parse_mode=parse_mode)
+        else:
+            await bot.send_message(chat_id=chat_id, text=part, parse_mode=parse_mode, reply_markup=reply_markup)
+
+
 async def call_ai(system_prompt: str, user_prompt: str) -> str:
     """Вызов OpenAI для генерации ответа."""
     try:
@@ -268,9 +294,9 @@ async def ask_audience(update: Update, context) -> int:
 
     tips = await call_ai(DIAGNOSIS_TIPS_PROMPT, user_prompt)
 
-    await update.message.reply_text(
+    await safe_send(
+        update.message,
         f"🔍 **Результаты диагностики:**\n\n{tips}",
-        parse_mode="Markdown",
     )
 
     await update.message.reply_text(
@@ -449,16 +475,16 @@ async def choose_style(update: Update, context) -> int:
         news_text = await search_news(news_prompt)
         ud["news_list"] = news_text.strip().splitlines()
 
-        await context.bot.send_message(
-            chat_id=query.from_user.id,
-            text=f"📰 **Актуальные новости для твоей ниши:**\n\n{news_text}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("1️⃣", callback_data="news_0"),
-                 InlineKeyboardButton("2️⃣", callback_data="news_1"),
-                 InlineKeyboardButton("3️⃣", callback_data="news_2")],
-                [InlineKeyboardButton("🔄 Подобрать другие новости", callback_data="news_refresh")],
-            ]),
+        news_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("1️⃣", callback_data="news_0"),
+             InlineKeyboardButton("2️⃣", callback_data="news_1"),
+             InlineKeyboardButton("3️⃣", callback_data="news_2")],
+            [InlineKeyboardButton("🔄 Подобрать другие новости", callback_data="news_refresh")],
+        ])
+        await safe_send_bot(
+            context.bot, query.from_user.id,
+            f"📰 **Актуальные новости для твоей ниши:**\n\n{news_text}",
+            reply_markup=news_kb,
         )
         return CHOOSE_NEWS
 
@@ -491,16 +517,16 @@ async def choose_news(update: Update, context) -> int:
         news_text = await search_news(news_prompt)
         ud["news_list"] = news_text.strip().splitlines()
 
-        await context.bot.send_message(
-            chat_id=query.from_user.id,
-            text=f"📰 **Новые новости:**\n\n{news_text}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("1️⃣", callback_data="news_0"),
-                 InlineKeyboardButton("2️⃣", callback_data="news_1"),
-                 InlineKeyboardButton("3️⃣", callback_data="news_2")],
-                [InlineKeyboardButton("🔄 Подобрать другие новости", callback_data="news_refresh")],
-            ]),
+        news_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("1️⃣", callback_data="news_0"),
+             InlineKeyboardButton("2️⃣", callback_data="news_1"),
+             InlineKeyboardButton("3️⃣", callback_data="news_2")],
+            [InlineKeyboardButton("🔄 Подобрать другие новости", callback_data="news_refresh")],
+        ])
+        await safe_send_bot(
+            context.bot, query.from_user.id,
+            f"📰 **Новые новости:**\n\n{news_text}",
+            reply_markup=news_kb,
         )
         return CHOOSE_NEWS
 
@@ -563,27 +589,11 @@ async def choose_duration(update: Update, context) -> int:
 
     scenario = await call_ai(SCENARIO_SYSTEM_PROMPT, user_prompt)
 
-    # Telegram ограничивает длину сообщения 4096 символами
-    if len(scenario) > 4000:
-        parts = [scenario[i:i+4000] for i in range(0, len(scenario), 4000)]
-        for i, part in enumerate(parts):
-            if i < len(parts) - 1:
-                await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=part,
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=part,
-                    reply_markup=after_scenario_keyboard(),
-                )
-    else:
-        await context.bot.send_message(
-            chat_id=query.from_user.id,
-            text=scenario,
-            reply_markup=after_scenario_keyboard(),
-        )
+    await safe_send_bot(
+        context.bot, query.from_user.id, scenario,
+        reply_markup=after_scenario_keyboard(),
+        parse_mode=None,
+    )
 
     return SHOW_SCENARIO
 
@@ -613,26 +623,11 @@ async def after_scenario_handler(update: Update, context) -> int:
 
         scenario = await call_ai(SCENARIO_SYSTEM_PROMPT, user_prompt)
 
-        if len(scenario) > 4000:
-            parts = [scenario[i:i+4000] for i in range(0, len(scenario), 4000)]
-            for i, part in enumerate(parts):
-                if i < len(parts) - 1:
-                    await context.bot.send_message(
-                        chat_id=query.from_user.id,
-                        text=part,
-                    )
-                else:
-                    await context.bot.send_message(
-                        chat_id=query.from_user.id,
-                        text=part,
-                        reply_markup=after_scenario_keyboard(),
-                    )
-        else:
-            await context.bot.send_message(
-                chat_id=query.from_user.id,
-                text=scenario,
-                reply_markup=after_scenario_keyboard(),
-            )
+        await safe_send_bot(
+            context.bot, query.from_user.id, scenario,
+            reply_markup=after_scenario_keyboard(),
+            parse_mode=None,
+        )
         return SHOW_SCENARIO
 
     elif query.data == "show_course":
