@@ -177,8 +177,9 @@ async def transcribe_voice(file_path: str) -> str:
 # ── Хендлеры ────────────────────────────────────────────────────────
 def payment_keyboard() -> InlineKeyboardMarkup:
     """Keyboard с кнопкой оплаты."""
+    pay_url = TRIBUTE_PRODUCT_LINK or JULIA_TG
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Оплатить доступ", url=TRIBUTE_PRODUCT_LINK)],
+        [InlineKeyboardButton("💳 Оплатить доступ", url=pay_url)],
     ])
 
 
