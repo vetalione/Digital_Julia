@@ -8,7 +8,6 @@ import os
 import tempfile
 
 from aiohttp import web
-import telegram.error
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -22,7 +21,7 @@ from openai import OpenAI
 
 from config import (
     TELEGRAM_BOT_TOKEN, OPENAI_API_KEY,
-    TRIBUTE_PRODUCT_LINK, PORT,
+    TRIBUTE_PRODUCT_LINK, PORT, RAILWAY_PUBLIC_DOMAIN,
 )
 
 JULIA_TG = "https://t.me/JFilipenko"
@@ -688,17 +687,8 @@ async def cancel(update: Update, context) -> int:
 
 
 async def error_handler(update: object, context) -> None:
-    """Handle errors raised during polling, including Conflict errors."""
-    error = context.error
-    if isinstance(error, telegram.error.Conflict):
-        logger.error(
-            "Conflict error: another bot instance is already running. "
-            "Shutting down this instance gracefully. Error: %s", error
-        )
-        # Signal the application to stop so this instance exits cleanly
-        context.application.stop_running()
-    else:
-        logger.exception("Unhandled exception in update handler: %s", error)
+    """Log unhandled exceptions from update handlers."""
+    logger.exception("Unhandled exception in update handler: %s", context.error)
 
 
 def main():
@@ -757,23 +747,30 @@ def main():
     app.add_handler(conv)
     app.add_error_handler(error_handler)
 
-    # Запуск веб-сервера для Tribute вебхуков + бота
-    webhook_app = create_webhook_app()
+    # Инициализация PTB приложения (без запуска polling)
+    loop.run_until_complete(app.initialize())
+    loop.run_until_complete(app.start())
+
+    # Регистрация вебхука в Telegram
+    webhook_url = f"https://{RAILWAY_PUBLIC_DOMAIN}/webhook"
+    loop.run_until_complete(app.bot.set_webhook(webhook_url))
+    logger.info(f"Telegram webhook set to {webhook_url}")
+
+    # Запуск веб-сервера для Tribute вебхуков + Telegram вебхука
+    webhook_app = create_webhook_app(app)
     runner = web.AppRunner(webhook_app)
     loop.run_until_complete(runner.setup())
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     loop.run_until_complete(site.start())
     logger.info(f"Webhook server started on port {PORT}")
 
-    logger.info("Бот запущен!")
+    logger.info("Бот запущен в режиме вебхука!")
     try:
-        app.run_polling(drop_pending_updates=True)
-    except telegram.error.Conflict as e:
-        logger.error(
-            "Conflict error on startup: another bot instance is running. "
-            "Shutting down gracefully. Error: %s", e
-        )
+        loop.run_forever()
     finally:
+        loop.run_until_complete(app.bot.delete_webhook())
+        loop.run_until_complete(app.stop())
+        loop.run_until_complete(app.shutdown())
         loop.run_until_complete(runner.cleanup())
 
 

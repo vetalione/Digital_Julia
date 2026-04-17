@@ -19,3 +19,4 @@ ACCESS_DURATION_DAYS = int(os.getenv("ACCESS_DURATION_DAYS", "30"))
 
 # Railway
 PORT = int(os.getenv("PORT", "8080"))
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
