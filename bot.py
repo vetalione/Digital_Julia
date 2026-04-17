@@ -170,18 +170,23 @@ async def call_ai(system_prompt: str, user_prompt: str) -> str:
 
 async def search_news(user_prompt: str) -> str:
     """Поиск реальных новостей через модель с веб-поиском."""
-    try:
-        response = client.responses.create(
-            model="gpt-5-search-api",
-            input=[
-                {"role": "system", "content": NEWS_SEARCH_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        return response.output_text or "Не удалось найти новости."
-    except Exception as e:
-        logger.error(f"News search error: {e}")
-        return "⚠️ Не удалось найти новости. Попробуйте ещё раз."
+    for attempt in range(2):
+        try:
+            response = client.responses.create(
+                model="gpt-5.4",
+                input=[
+                    {"role": "system", "content": NEWS_SEARCH_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                tools=[{"type": "web_search_preview", "search_context_size": "medium"}],
+            )
+            return response.output_text or "Не удалось найти новости."
+        except Exception as e:
+            logger.error(f"News search error (attempt {attempt+1}): {e}")
+            if attempt == 0:
+                import asyncio
+                await asyncio.sleep(2)
+    return "⚠️ Не удалось найти новости. Попробуйте ещё раз."
 
 
 async def transcribe_voice(file_path: str) -> str:
