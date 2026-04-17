@@ -8,6 +8,7 @@ import os
 import tempfile
 
 from aiohttp import web
+import telegram.error
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -686,6 +687,20 @@ async def cancel(update: Update, context) -> int:
     return ConversationHandler.END
 
 
+async def error_handler(update: object, context) -> None:
+    """Handle errors raised during polling, including Conflict errors."""
+    error = context.error
+    if isinstance(error, telegram.error.Conflict):
+        logger.error(
+            "Conflict error: another bot instance is already running. "
+            "Shutting down this instance gracefully. Error: %s", error
+        )
+        # Signal the application to stop so this instance exits cleanly
+        context.application.stop_running()
+    else:
+        logger.exception("Unhandled exception in update handler: %s", error)
+
+
 def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -740,6 +755,7 @@ def main():
     )
 
     app.add_handler(conv)
+    app.add_error_handler(error_handler)
 
     # Запуск веб-сервера для Tribute вебхуков + бота
     webhook_app = create_webhook_app()
@@ -750,7 +766,15 @@ def main():
     logger.info(f"Webhook server started on port {PORT}")
 
     logger.info("Бот запущен!")
-    app.run_polling()
+    try:
+        app.run_polling(drop_pending_updates=True)
+    except telegram.error.Conflict as e:
+        logger.error(
+            "Conflict error on startup: another bot instance is running. "
+            "Shutting down gracefully. Error: %s", e
+        )
+    finally:
+        loop.run_until_complete(runner.cleanup())
 
 
 if __name__ == "__main__":
