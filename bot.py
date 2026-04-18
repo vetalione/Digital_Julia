@@ -5,8 +5,11 @@
 import asyncio
 import logging
 import os
+import random
 import tempfile
+import time
 
+import aiohttp
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -17,7 +20,7 @@ from telegram.ext import (
     ConversationHandler,
     filters,
 )
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from config import (
     TELEGRAM_BOT_TOKEN, OPENAI_API_KEY,
@@ -43,6 +46,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # ── Состояния диалога ──────────────────────────────────────────────
 (
@@ -162,6 +166,30 @@ def clean_md_for_telegram(text: str) -> str:
     return text.strip()
 
 
+def strip_followup(text: str) -> str:
+    """Удаляет follow-up предложения GPT в конце ответа."""
+    paragraphs = text.rstrip().split('\n\n')
+    if len(paragraphs) < 2:
+        return text
+
+    followup_starters = (
+        'хочешь', 'если хочешь', 'если хотите', 'могу также', 'могу ещё',
+        'давай также', 'давайте также', 'нужна помощь', 'готов помочь',
+        'готова помочь', 'обращайся', 'обращайтесь', 'напиши ', 'напишите ',
+        'если нужно', 'если нужна', 'желаешь', 'хотите', 'могу помочь',
+        'буду рад', 'буду рада',
+    )
+
+    while len(paragraphs) > 1:
+        last = paragraphs[-1].strip().lstrip('-').strip()
+        if any(last.lower().startswith(s) for s in followup_starters):
+            paragraphs.pop()
+        else:
+            break
+
+    return '\n\n'.join(paragraphs).strip()
+
+
 async def call_ai(system_prompt: str, user_prompt: str) -> str:
     """Вызов OpenAI для генерации ответа."""
     try:
@@ -175,10 +203,58 @@ async def call_ai(system_prompt: str, user_prompt: str) -> str:
             temperature=0.8,
         )
         result = response.choices[0].message.content or "Не удалось сгенерировать ответ."
-        return clean_md_for_telegram(result)
+        return clean_md_for_telegram(strip_followup(result))
     except Exception as e:
         logger.error(f"OpenAI error: {e}")
         return "⚠️ Произошла ошибка при генерации. Попробуйте ещё раз."
+
+
+async def stream_ai_to_chat(bot, chat_id: int, system_prompt: str, user_prompt: str) -> str:
+    """Стримит ответ GPT в чат через sendMessageDraft, возвращает финальный текст."""
+    draft_id = random.randint(1, 2**31 - 1)
+    api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessageDraft"
+
+    try:
+        stream = await async_client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_completion_tokens=2000,
+            temperature=0.8,
+            stream=True,
+        )
+
+        accumulated = ""
+        last_update_time = 0.0
+
+        async with aiohttp.ClientSession() as session:
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    accumulated += chunk.choices[0].delta.content
+
+                    now = time.time()
+                    if now - last_update_time >= 0.5 and len(accumulated) > 20:
+                        try:
+                            await session.post(api_url, json={
+                                "chat_id": chat_id,
+                                "draft_id": draft_id,
+                                "text": accumulated[:4096],
+                            })
+                            last_update_time = now
+                        except Exception as e:
+                            logger.debug(f"Draft update failed: {e}")
+
+        if not accumulated:
+            return "Не удалось сгенерировать ответ."
+
+        return clean_md_for_telegram(strip_followup(accumulated))
+
+    except Exception as e:
+        logger.error(f"OpenAI streaming error: {e}")
+        # Фоллбэк на обычный вызов без стриминга
+        return await call_ai(system_prompt, user_prompt)
 
 
 async def search_news(user_prompt: str) -> str:
@@ -231,7 +307,8 @@ def payment_keyboard() -> InlineKeyboardMarkup:
 async def require_access(update: Update) -> bool:
     """Проверяет доступ юзера. Возвращает True если доступ есть."""
     user_id = update.effective_user.id
-    has_access = await check_access(user_id)
+    username = update.effective_user.username
+    has_access = await check_access(user_id, username)
     if not has_access:
         text = (
             "⚠️ **Доступ не активен**\n\n"
@@ -311,10 +388,13 @@ async def ask_audience(update: Update, context) -> int:
         f"Целевая аудитория: {ud['audience']}"
     )
 
-    tips = await call_ai(DIAGNOSIS_TIPS_PROMPT, user_prompt)
+    tips = await stream_ai_to_chat(
+        context.bot, update.effective_user.id,
+        DIAGNOSIS_TIPS_PROMPT, user_prompt,
+    )
 
-    await safe_send(
-        update.message,
+    await safe_send_bot(
+        context.bot, update.effective_user.id,
         f"🔍 **Результаты диагностики:**\n\n{tips}",
     )
 
@@ -606,7 +686,10 @@ async def choose_duration(update: Update, context) -> int:
         user_input=ud.get("user_input"),
     )
 
-    scenario = await call_ai(SCENARIO_SYSTEM_PROMPT, user_prompt)
+    scenario = await stream_ai_to_chat(
+        context.bot, query.from_user.id,
+        SCENARIO_SYSTEM_PROMPT, user_prompt,
+    )
 
     await safe_send_bot(
         context.bot, query.from_user.id, scenario,
@@ -639,7 +722,10 @@ async def after_scenario_handler(update: Update, context) -> int:
             user_input=ud.get("user_input"),
         )
 
-        scenario = await call_ai(SCENARIO_SYSTEM_PROMPT, user_prompt)
+        scenario = await stream_ai_to_chat(
+            context.bot, query.from_user.id,
+            SCENARIO_SYSTEM_PROMPT, user_prompt,
+        )
 
         await safe_send_bot(
             context.bot, query.from_user.id, scenario,

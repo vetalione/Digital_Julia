@@ -48,8 +48,8 @@ async def close_db():
         pool = None
 
 
-async def check_access(telegram_user_id: int) -> bool:
-    """Проверяет, есть ли у пользователя активный доступ."""
+async def check_access(telegram_user_id: int, telegram_username: str | None = None) -> bool:
+    """Проверяет, есть ли у пользователя активный доступ. Проверяет по ID, затем по username."""
     if not pool:
         return False
     row = await pool.fetchrow(
@@ -61,7 +61,27 @@ async def check_access(telegram_user_id: int) -> bool:
         telegram_user_id,
     )
     if row and row["max_until"]:
-        return row["max_until"] > datetime.now(timezone.utc)
+        if row["max_until"] > datetime.now(timezone.utc):
+            return True
+    # Фоллбэк: проверка по username
+    if telegram_username:
+        row = await pool.fetchrow(
+            """
+            SELECT MAX(access_until) AS max_until
+            FROM purchases
+            WHERE LOWER(telegram_username) = LOWER($1) AND is_refunded = FALSE
+            """,
+            telegram_username,
+        )
+        if row and row["max_until"] and row["max_until"] > datetime.now(timezone.utc):
+            # Обновляем user_id для будущих проверок
+            await pool.execute(
+                "UPDATE purchases SET telegram_user_id = $1 WHERE LOWER(telegram_username) = LOWER($2) AND is_refunded = FALSE",
+                telegram_user_id,
+                telegram_username,
+            )
+            logger.info(f"Access found by username @{telegram_username}, updated user_id to {telegram_user_id}")
+            return True
     return False
 
 
