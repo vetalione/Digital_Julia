@@ -268,7 +268,10 @@ async def search_news(user_prompt: str) -> str:
             ],
             tools=[{"type": "web_search"}],
         )
-        return response.output_text or "Не удалось найти новости."
+        raw = response.output_text or "Не удалось найти новости."
+        # Экранируем символы, которые ломают Telegram Markdown v1
+        raw = raw.replace("_", "\\_").replace("[", "\\[")
+        return raw
     except Exception as e:
         logger.error(f"News search error: {e}")
         return "⚠️ Не удалось найти новости. Попробуйте ещё раз."
