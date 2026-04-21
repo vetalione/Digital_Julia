@@ -121,6 +121,14 @@ def target_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def news_target_keyboard() -> InlineKeyboardMarkup:
+    """Два варианта цели — только для стиля Новости."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎯 Привлечение клиентов", callback_data="target_leads")],
+        [InlineKeyboardButton("📈 Охваты / набор аудитории", callback_data="target_subscribe")],
+    ])
+
+
 def duration_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     for key, desc in DURATIONS.items():
@@ -595,7 +603,7 @@ async def choose_style(update: Update, context) -> int:
         f"Стиль: {style_name} ✅\n\n"
         "🎯 **Куда ведём аудиторию?** 👇",
         parse_mode="Markdown",
-        reply_markup=target_keyboard(),
+        reply_markup=news_target_keyboard(),
     )
     return CHOOSE_TARGET
 
@@ -646,7 +654,7 @@ async def choose_news(update: Update, context) -> int:
         f"Выбрана новость: {chosen_news} ✅\n\n"
         "🎯 **Куда ведём аудиторию?** 👇",
         parse_mode="Markdown",
-        reply_markup=target_keyboard(),
+        reply_markup=news_target_keyboard(),
     )
     return CHOOSE_TARGET
 
