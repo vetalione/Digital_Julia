@@ -141,7 +141,7 @@ async def safe_send(target, text: str, reply_markup=None, parse_mode="Markdown")
     if len(text) <= 4000:
         await target.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
         return
-    parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+    parts = _split_text(text)
     for i, part in enumerate(parts):
         if i < len(parts) - 1:
             await target.reply_text(part, parse_mode=parse_mode)
@@ -149,12 +149,32 @@ async def safe_send(target, text: str, reply_markup=None, parse_mode="Markdown")
             await target.reply_text(part, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
+def _split_text(text: str, limit: int = 4000) -> list[str]:
+    """Разбивает текст по абзацам не разрывая Markdown-сущности."""
+    if len(text) <= limit:
+        return [text]
+    parts = []
+    while len(text) > limit:
+        cut = text.rfind('\n\n', 0, limit)
+        if cut == -1:
+            cut = text.rfind('\n', 0, limit)
+        if cut == -1:
+            cut = text.rfind(' ', 0, limit)
+        if cut == -1:
+            cut = limit
+        parts.append(text[:cut].strip())
+        text = text[cut:].strip()
+    if text:
+        parts.append(text)
+    return parts
+
+
 async def safe_send_bot(bot, chat_id: int, text: str, reply_markup=None, parse_mode="Markdown"):
     """Отправляет через bot.send_message, разбивая на части."""
     if len(text) <= 4000:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
         return
-    parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+    parts = _split_text(text)
     for i, part in enumerate(parts):
         if i < len(parts) - 1:
             await bot.send_message(chat_id=chat_id, text=part, parse_mode=parse_mode)
@@ -207,7 +227,7 @@ async def call_ai(system_prompt: str, user_prompt: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_completion_tokens=2000,
+            max_completion_tokens=4000,
             temperature=0.8,
         )
         result = response.choices[0].message.content or "Не удалось сгенерировать ответ."
@@ -229,7 +249,7 @@ async def stream_ai_to_chat(bot, chat_id: int, system_prompt: str, user_prompt: 
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_completion_tokens=2000,
+            max_completion_tokens=4000,
             temperature=0.8,
             stream=True,
         )
