@@ -68,7 +68,7 @@ async def handle_tribute_webhook(request: web.Request) -> web.Response:
                 f"purchase={purchase_id}"
             )
 
-            # Отправляем уведомление юзеру в Telegram
+            # Отправляем уведомление юзеру в Telegram + запускаем флоу диагностики
             ptb_app = request.app.get("ptb_app")
             if ptb_app:
                 try:
@@ -77,11 +77,23 @@ async def handle_tribute_webhook(request: web.Request) -> web.Response:
                         text=(
                             "✅ *Оплата получена!*\n\n"
                             "Доступ к боту активирован 🎉\n\n"
-                            "Жми /start чтобы начать пользоваться — пройди диагностику "
-                            "и сгенерируй свой первый сценарий Reels 🎬"
+                            "Для начала давай проведём быструю диагностику и потом "
+                            "сгенерируем твой первый сценарий Reels 🎬\n\n"
+                            "Напиши коротко, *в какой ты нише?*\n"
+                            "Например: маркетинг, фитнес, психология, бьюти, коучинг, e-commerce..."
                         ),
                         parse_mode="Markdown",
                     )
+                    # Ставим юзера в состояние ASK_NICHE, чтобы следующее сообщение
+                    # подхватил ConversationHandler и пошёл по флоу диагностики
+                    conv = ptb_app.bot_data.get("conv_handler")
+                    if conv is not None:
+                        ASK_NICHE_STATE = 0  # см. bot.py: первый state
+                        key = (telegram_user_id, telegram_user_id)
+                        try:
+                            conv._conversations[key] = ASK_NICHE_STATE
+                        except Exception as e:
+                            logger.warning(f"Failed to set conv state: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to notify user {telegram_user_id} about payment: {e}")
 

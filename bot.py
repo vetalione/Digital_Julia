@@ -898,6 +898,7 @@ def main():
 
     app.add_handler(conv)
     app.add_error_handler(error_handler)
+    app.bot_data["conv_handler"] = conv
 
     # Инициализация PTB приложения (без запуска polling)
     loop.run_until_complete(app.initialize())
