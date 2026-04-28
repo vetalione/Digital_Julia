@@ -68,6 +68,23 @@ async def handle_tribute_webhook(request: web.Request) -> web.Response:
                 f"purchase={purchase_id}"
             )
 
+            # Отправляем уведомление юзеру в Telegram
+            ptb_app = request.app.get("ptb_app")
+            if ptb_app:
+                try:
+                    await ptb_app.bot.send_message(
+                        chat_id=telegram_user_id,
+                        text=(
+                            "✅ *Оплата получена!*\n\n"
+                            "Доступ к боту активирован 🎉\n\n"
+                            "Жми /start чтобы начать пользоваться — пройди диагностику "
+                            "и сгенерируй свой первый сценарий Reels 🎬"
+                        ),
+                        parse_mode="Markdown",
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to notify user {telegram_user_id} about payment: {e}")
+
     elif event_name == "digital_product_refunded":
         purchase_id = payload.get("purchase_id")
         if purchase_id:
