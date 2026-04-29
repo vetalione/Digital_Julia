@@ -2,7 +2,6 @@
 Веб-сервер для приёма вебхуков от Tribute и Telegram.
 """
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -120,8 +119,7 @@ async def handle_telegram_webhook(request: web.Request) -> web.Response:
         return web.Response(status=400)
 
     update = Update.de_json(data, ptb_app.bot)
-    # Fire-and-forget: не ждём завершения обработки, сразу возвращаем 200
-    asyncio.ensure_future(ptb_app.process_update(update))
+    await ptb_app.process_update(update)
     return web.Response(status=200)
 
 
