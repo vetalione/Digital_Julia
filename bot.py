@@ -37,7 +37,7 @@ from prompts import (
     DURATIONS,
     build_scenario_prompt,
 )
-from db import init_db, close_db, check_access, get_access_until
+from db import init_db, close_db, check_access, get_access_until, log_visit
 from webhook_server import create_webhook_app
 
 logging.basicConfig(
@@ -382,10 +382,21 @@ async def require_access(update: Update) -> bool:
 
 async def start(update: Update, context) -> int:
     """Приветствие и начало диагностики."""
+    user = update.effective_user
+    # Логируем визит для будущих рассылок
+    try:
+        await log_visit(
+            telegram_user_id=user.id,
+            telegram_username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            language_code=user.language_code,
+        )
+    except Exception as e:
+        logger.warning(f"log_visit failed: {e}")
+
     if not await require_access(update):
         return ConversationHandler.END
-
-    user = update.effective_user
     await update.message.reply_text(
         f"Привет, {user.first_name}! 👋\n\n"
         "Я — бот ЦифроЮли 🎬\n\n"

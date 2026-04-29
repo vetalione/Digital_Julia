@@ -36,6 +36,16 @@ async def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_purchases_tg_user
                 ON purchases (telegram_user_id);
+            CREATE TABLE IF NOT EXISTS bot_visitors (
+                telegram_user_id BIGINT PRIMARY KEY,
+                telegram_username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                language_code TEXT,
+                first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+                last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+                visits_count INTEGER DEFAULT 1
+            );
         """)
     logger.info("Database initialized")
 
@@ -156,3 +166,34 @@ async def revoke_access(purchase_id: int):
         purchase_id,
     )
     logger.info(f"Access revoked: purchase={purchase_id}")
+
+
+async def log_visit(
+    telegram_user_id: int,
+    telegram_username: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    language_code: str | None = None,
+) -> None:
+    """Фиксирует визит юзера в бота. Сходится по telegram_user_id."""
+    if not pool:
+        return
+    await pool.execute(
+        """
+        INSERT INTO bot_visitors (
+            telegram_user_id, telegram_username, first_name, last_name, language_code
+        ) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (telegram_user_id) DO UPDATE SET
+            telegram_username = COALESCE(EXCLUDED.telegram_username, bot_visitors.telegram_username),
+            first_name = COALESCE(EXCLUDED.first_name, bot_visitors.first_name),
+            last_name = COALESCE(EXCLUDED.last_name, bot_visitors.last_name),
+            language_code = COALESCE(EXCLUDED.language_code, bot_visitors.language_code),
+            last_seen_at = NOW(),
+            visits_count = bot_visitors.visits_count + 1
+        """,
+        telegram_user_id,
+        telegram_username,
+        first_name,
+        last_name,
+        language_code,
+    )
