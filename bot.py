@@ -18,6 +18,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     ConversationHandler,
+    PicklePersistence,
     filters,
 )
 from openai import OpenAI, AsyncOpenAI
@@ -861,7 +862,13 @@ def main():
     # Инициализация БД
     loop.run_until_complete(init_db())
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Персистентность состояний ConversationHandler — выживают redeploy
+    # Если в Railway подключён Volume на /data — храним там, иначе рядом с кодом (эфемерно)
+    persistence_path = "/data/bot_persistence.pickle" if os.path.isdir("/data") else "bot_persistence.pickle"
+    persistence = PicklePersistence(filepath=persistence_path)
+    logger.info(f"Using persistence file: {persistence_path}")
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(persistence).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -905,6 +912,8 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
+        name="main_conv",
+        persistent=True,
     )
 
     app.add_handler(conv)
