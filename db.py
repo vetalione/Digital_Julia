@@ -46,6 +46,19 @@ async def init_db():
                 last_seen_at TIMESTAMPTZ DEFAULT NOW(),
                 visits_count INTEGER DEFAULT 1
             );
+            CREATE TABLE IF NOT EXISTS receipt_uploads (
+                id SERIAL PRIMARY KEY,
+                image_hash TEXT UNIQUE NOT NULL,
+                telegram_user_id BIGINT NOT NULL,
+                extracted_amount NUMERIC,
+                extracted_card_last4 TEXT,
+                extracted_date TEXT,
+                is_valid BOOLEAN,
+                reason TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_receipt_uploads_user
+                ON receipt_uploads (telegram_user_id);
         """)
     logger.info("Database initialized")
 
@@ -196,4 +209,44 @@ async def log_visit(
         first_name,
         last_name,
         language_code,
+    )
+
+
+async def get_receipt_by_hash(image_hash: str) -> dict | None:
+    """Возвращает запись о скрине по хэшу или None если такого не было."""
+    if not pool:
+        return None
+    row = await pool.fetchrow(
+        """SELECT telegram_user_id, is_valid, created_at
+           FROM receipt_uploads WHERE image_hash = $1""",
+        image_hash,
+    )
+    return dict(row) if row else None
+
+
+async def save_receipt_upload(
+    image_hash: str,
+    telegram_user_id: int,
+    extracted_amount: float | None,
+    extracted_card_last4: str | None,
+    extracted_date: str | None,
+    is_valid: bool,
+    reason: str | None,
+) -> None:
+    """Сохраняет факт загрузки скрина (для дедупа)."""
+    if not pool:
+        return
+    await pool.execute(
+        """INSERT INTO receipt_uploads
+           (image_hash, telegram_user_id, extracted_amount,
+            extracted_card_last4, extracted_date, is_valid, reason)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (image_hash) DO NOTHING""",
+        image_hash,
+        telegram_user_id,
+        extracted_amount,
+        extracted_card_last4,
+        extracted_date,
+        is_valid,
+        reason,
     )

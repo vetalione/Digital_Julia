@@ -29,6 +29,12 @@ from config import (
 )
 
 JULIA_TG = "https://t.me/JFilipenko"
+ASSISTANT_TG = "https://t.me/vetalsmirnov"
+
+# Прямая оплата в гривнах
+DIRECT_PAY_AMOUNT_UAH = 1543
+DIRECT_PAY_CARD_FULL = "5169 1551 2428 3993"
+DIRECT_PAY_CARD_LAST4 = "3993"
 from prompts import (
     DIAGNOSIS_TIPS_PROMPT,
     SCENARIO_SYSTEM_PROMPT,
@@ -38,7 +44,11 @@ from prompts import (
     DURATIONS,
     build_scenario_prompt,
 )
-from db import init_db, close_db, check_access, get_access_until, log_visit
+from db import (
+    init_db, close_db, check_access, get_access_until, log_visit,
+    grant_access, get_receipt_by_hash, save_receipt_upload,
+)
+from receipt_validator import validate_receipt, image_sha256
 from webhook_server import create_webhook_app
 
 logging.basicConfig(
@@ -329,10 +339,11 @@ async def transcribe_voice(file_path: str) -> str:
 
 # ── Хендлеры ────────────────────────────────────────────────────────
 def payment_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard с кнопкой оплаты."""
+    """Keyboard с кнопками оплаты."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💳 Оплатить доступ", url="https://web.tribute.tg/p/uzV")],
         [InlineKeyboardButton("⭐ Оплата звёздами", url="https://t.me/tribute/app?startapp=puzV")],
+        [InlineKeyboardButton("🇦 Оплатить напрямую (₴)", callback_data="pay_direct_uah")],
     ])
 
 
@@ -850,6 +861,170 @@ async def cancel(update: Update, context) -> int:
     return ConversationHandler.END
 
 
+# ── Прямая оплата в гривнах ────────────────────────────────────────
+
+def _direct_pay_assistant_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Написать ассистенту", url=ASSISTANT_TG)],
+        [InlineKeyboardButton("⬅️ Другие способы оплаты", callback_data="pay_back")],
+    ])
+
+
+def _payment_failure_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Написать ассистенту", url=ASSISTANT_TG)],
+        [InlineKeyboardButton("🔁 Прислать другой скриншот", callback_data="pay_direct_uah")],
+    ])
+
+
+async def pay_direct_uah_callback(update: Update, context) -> None:
+    """Юзер нажал «Оплатить напрямую (₴)» — показываем реквизиты и ждём скриншот."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data["awaiting_receipt"] = True
+
+    text = (
+        "🇦 *Прямая оплата в гривнах*\n\n"
+        f"Переведите *{DIRECT_PAY_AMOUNT_UAH} ₴* на карту:\n\n"
+        f"`{DIRECT_PAY_CARD_FULL}`\n"
+        "_(нажми, чтобы скопировать)_\n\n"
+        "После перевода *пришлите сюда скриншот* из приложения банка — "
+        "я автоматически проверю платёж и открою доступ на 30 дней.\n\n"
+        "⚠️ Важно:\n"
+        "• Скрин должен быть свежим (не старше 7 дней)\n"
+        "• Сумма и номер карты должны быть видны\n"
+        "• Один скриншот = один доступ\n\n"
+        "Если что-то пошло не так — напиши ассистенту 👇"
+    )
+    await query.edit_message_text(
+        text, parse_mode="Markdown",
+        reply_markup=_direct_pay_assistant_keyboard(),
+    )
+
+
+async def pay_back_callback(update: Update, context) -> None:
+    """Возврат к выбору способов оплаты."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data["awaiting_receipt"] = False
+    await query.edit_message_text(
+        "Выбери способ оплаты доступа 👇",
+        reply_markup=payment_keyboard(),
+    )
+
+
+async def handle_receipt_photo(update: Update, context) -> None:
+    """Обрабатывает скриншот платежа: GPT-vision → дедуп → выдача доступа."""
+    if not context.user_data.get("awaiting_receipt"):
+        # Юзер прислал фото, но не нажимал кнопку прямой оплаты — игнорируем
+        return
+
+    user = update.effective_user
+    msg = update.message
+
+    if not msg or not msg.photo:
+        return
+
+    status_msg = await msg.reply_text("🔍 Проверяю скриншот... Это займёт 5-15 секунд.")
+
+    try:
+        # Берём самый большой размер
+        photo = msg.photo[-1]
+        tg_file = await context.bot.get_file(photo.file_id)
+        image_bytes = bytes(await tg_file.download_as_bytearray())
+
+        # Дедуп по хэшу
+        img_hash = image_sha256(image_bytes)
+        existing = await get_receipt_by_hash(img_hash)
+        if existing:
+            await status_msg.delete()
+            owner_id = existing["telegram_user_id"]
+            if existing["is_valid"] and owner_id == user.id:
+                # Сами уже использовали — но возможно доступ ещё активен
+                until = await get_access_until(user.id)
+                if until:
+                    await msg.reply_text(
+                        f"✅ Этот скриншот уже использован — доступ активен до "
+                        f"*{until.strftime('%d.%m.%Y')}*.\n\nНажми /start чтобы начать.",
+                        parse_mode="Markdown",
+                    )
+                    return
+            await msg.reply_text(
+                "❌ *Этот скриншот уже использовался* для получения доступа.\n\n"
+                "Один скрин = один доступ. Если хочешь продлить — сделай новый перевод "
+                f"({DIRECT_PAY_AMOUNT_UAH} ₴ на карту `{DIRECT_PAY_CARD_FULL}`) "
+                "и пришли свежий скриншот.\n\n"
+                "Если считаешь что это ошибка — напиши ассистенту 👇",
+                parse_mode="Markdown",
+                reply_markup=_payment_failure_keyboard(),
+            )
+            return
+
+        # GPT-валидация
+        result = await validate_receipt(
+            async_client,
+            image_bytes,
+            expected_amount_uah=DIRECT_PAY_AMOUNT_UAH,
+            expected_card_last4=DIRECT_PAY_CARD_LAST4,
+        )
+
+        # Сохраняем факт загрузки (даже если невалид — чтобы повторно тот же скрин не пытались скормить)
+        await save_receipt_upload(
+            image_hash=img_hash,
+            telegram_user_id=user.id,
+            extracted_amount=float(result["amount"]) if result.get("amount") is not None else None,
+            extracted_card_last4=(result.get("card_last4") or "")[-4:] or None,
+            extracted_date=result.get("date_str"),
+            is_valid=bool(result.get("is_valid")),
+            reason=result.get("validation_reason"),
+        )
+
+        await status_msg.delete()
+
+        if not result.get("is_valid"):
+            reason = result.get("validation_reason") or "Не удалось подтвердить платёж."
+            await msg.reply_text(
+                f"❌ *Скриншот не прошёл проверку.*\n\n{reason}\n\n"
+                "Можешь прислать другой скриншот или связаться с ассистентом 👇",
+                parse_mode="Markdown",
+                reply_markup=_payment_failure_keyboard(),
+            )
+            return
+
+        # Всё ок — выдаём доступ
+        purchase_id = int(time.time())
+        until = await grant_access(
+            telegram_user_id=user.id,
+            telegram_username=user.username or "",
+            purchase_id=purchase_id,
+            product_id=0,
+            product_name="direct_uah_transfer",
+            amount=DIRECT_PAY_AMOUNT_UAH,
+            currency="UAH",
+        )
+        context.user_data["awaiting_receipt"] = False
+
+        await msg.reply_text(
+            f"✅ *Оплата подтверждена!*\n\n"
+            f"Доступ открыт до *{until.strftime('%d.%m.%Y')}* (30 дней).\n\n"
+            "Нажми /start чтобы начать диагностику и сгенерировать первый сценарий 🚀",
+            parse_mode="Markdown",
+        )
+        logger.info(f"Direct UAH access granted to {user.id} (@{user.username}) until {until}")
+
+    except Exception as e:
+        logger.exception(f"Error in handle_receipt_photo: {e}")
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await msg.reply_text(
+            "⚠️ Произошла ошибка при проверке скриншота. Попробуй ещё раз "
+            "или напиши ассистенту 👇",
+            reply_markup=_payment_failure_keyboard(),
+        )
+
+
 async def error_handler(update: object, context) -> None:
     """Log unhandled exceptions from update handlers."""
     logger.exception("Unhandled exception in update handler: %s", context.error)
@@ -917,6 +1092,13 @@ def main():
     )
 
     app.add_handler(conv)
+
+    # Глобальные хендлеры прямой оплаты в гривнах (работают вне ConversationHandler,
+    # чтобы быть доступными неоплаченным пользователям).
+    app.add_handler(CallbackQueryHandler(pay_direct_uah_callback, pattern=r"^pay_direct_uah$"), group=1)
+    app.add_handler(CallbackQueryHandler(pay_back_callback, pattern=r"^pay_back$"), group=1)
+    app.add_handler(MessageHandler(filters.PHOTO, handle_receipt_photo), group=1)
+
     app.add_error_handler(error_handler)
     app.bot_data["conv_handler"] = conv
 
