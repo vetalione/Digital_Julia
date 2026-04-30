@@ -1004,12 +1004,25 @@ async def handle_receipt_photo(update: Update, context) -> None:
         )
         context.user_data["awaiting_receipt"] = False
 
+        # Присылаем такое же сообщение как после успешной оплаты через Tribute
         await msg.reply_text(
-            f"✅ *Оплата подтверждена!*\n\n"
-            f"Доступ открыт до *{until.strftime('%d.%m.%Y')}* (30 дней).\n\n"
-            "Нажми /start чтобы начать диагностику и сгенерировать первый сценарий 🚀",
+            "✅ *Оплата получена!*\n\n"
+            "Доступ к боту активирован 🎉\n\n"
+            "Для начала давай проведём быструю диагностику и потом "
+            "сгенерируем твой первый сценарий Reels 🎬\n\n"
+            "Напиши коротко, *в какой ты нише?*\n"
+            "Например: маркетинг, фитнес, психология, бьюти, коучинг, e-commerce...",
             parse_mode="Markdown",
         )
+
+        # Ставим юзера в ASK_NICHE — следующее сообщение подхватит ConversationHandler
+        try:
+            conv = context.application.bot_data.get("conv_handler")
+            if conv is not None:
+                conv._conversations[(user.id, user.id)] = ASK_NICHE
+        except Exception as e:
+            logger.warning(f"Failed to set conv state after receipt: {e}")
+
         logger.info(f"Direct UAH access granted to {user.id} (@{user.username}) until {until}")
 
     except Exception as e:

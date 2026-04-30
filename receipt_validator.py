@@ -64,7 +64,7 @@ async def validate_receipt(
 }}"""
 
     response = await client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.4",
         messages=[{
             "role": "user",
             "content": [
@@ -76,7 +76,6 @@ async def validate_receipt(
             ],
         }],
         response_format={"type": "json_object"},
-        temperature=0.1,
         max_completion_tokens=600,
     )
     raw = response.choices[0].message.content or "{}"
