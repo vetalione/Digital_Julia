@@ -88,8 +88,61 @@ async def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_admin_snapshots
                 ON admin_stat_snapshots (admin_user_id, command, created_at DESC);
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                telegram_user_id BIGINT PRIMARY KEY,
+                niche TEXT,
+                product TEXT,
+                audience TEXT,
+                diagnosis_done_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
         """)
     logger.info("Database initialized")
+
+
+async def get_profile(telegram_user_id: int) -> dict | None:
+    """Возвращает сохранённый профиль юзера (ниша/продукт/ЦА) или None."""
+    if not pool:
+        return None
+    row = await pool.fetchrow(
+        """SELECT niche, product, audience, diagnosis_done_at
+           FROM user_profiles WHERE telegram_user_id = $1""",
+        telegram_user_id,
+    )
+    return dict(row) if row else None
+
+
+async def save_profile(
+    telegram_user_id: int,
+    niche: str,
+    product: str,
+    audience: str,
+) -> None:
+    """Сохраняет/перезаписывает профиль юзера. Вызывается после диагностики."""
+    if not pool:
+        return
+    await pool.execute(
+        """INSERT INTO user_profiles
+           (telegram_user_id, niche, product, audience, diagnosis_done_at, updated_at)
+           VALUES ($1, $2, $3, $4, NOW(), NOW())
+           ON CONFLICT (telegram_user_id) DO UPDATE SET
+             niche = EXCLUDED.niche,
+             product = EXCLUDED.product,
+             audience = EXCLUDED.audience,
+             diagnosis_done_at = NOW(),
+             updated_at = NOW()""",
+        telegram_user_id, niche, product, audience,
+    )
+
+
+async def clear_profile(telegram_user_id: int) -> None:
+    """Удаляет профиль юзера (используется при 'пройти диагностику заново')."""
+    if not pool:
+        return
+    await pool.execute(
+        "DELETE FROM user_profiles WHERE telegram_user_id = $1",
+        telegram_user_id,
+    )
 
 
 async def close_db():

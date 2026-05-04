@@ -47,7 +47,7 @@ from prompts import (
 from db import (
     init_db, close_db, check_access, get_access_until, log_visit,
     grant_access, get_receipt_by_hash, save_receipt_upload, log_pay_click,
-    log_event,
+    log_event, get_profile, save_profile, clear_profile,
 )
 from receipt_validator import validate_receipt, image_sha256
 from admin_stats import is_admin, stats_command_pay, stats_command_usage
@@ -414,6 +414,32 @@ async def start(update: Update, context) -> int:
     # Полный сброс старого состояния (защита от "молчащего" бота после redeploy)
     context.user_data.clear()
     user_data_store.pop(user.id, None)
+
+    # Если у юзера уже есть сохранённый профиль (ниша/продукт/ЦА) —
+    # пропускаем диагностику и сразу ведём в главное меню.
+    profile = None
+    try:
+        profile = await get_profile(user.id)
+    except Exception as e:
+        logger.warning(f"get_profile failed: {e}")
+
+    if profile and profile.get("niche") and profile.get("product") and profile.get("audience"):
+        ud = get_user(user.id)
+        ud["niche"] = profile["niche"]
+        ud["product"] = profile["product"]
+        ud["audience"] = profile["audience"]
+        await update.message.reply_text(
+            f"С возвращением, {user.first_name}! 👋\n\n"
+            f"Твой профиль уже сохранён:\n"
+            f"• *Ниша:* {profile['niche']}\n"
+            f"• *Продукт:* {profile['product']}\n"
+            f"• *ЦА:* {profile['audience']}\n\n"
+            f"Что хочешь сделать? 👇",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(),
+        )
+        return MAIN_MENU
+
     await update.message.reply_text(
         f"Привет, {user.first_name}! 👋\n\n"
         "Я — бот ЦифроЮли 🎬\n\n"
@@ -494,6 +520,15 @@ async def ask_audience(update: Update, context) -> int:
     except Exception as e:
         logger.warning(f"log_event diagnostic_done failed: {e}")
 
+    # Сохраняем профиль в Postgres, чтобы пережил редеплой
+    try:
+        await save_profile(
+            update.effective_user.id,
+            ud["niche"], ud["product"], ud["audience"],
+        )
+    except Exception as e:
+        logger.warning(f"save_profile failed: {e}")
+
     await update.message.reply_text(
         "Что хочешь сделать дальше? 👇",
         reply_markup=main_menu_keyboard(),
@@ -548,6 +583,11 @@ async def main_menu_handler(update: Update, context) -> int:
         ud["niche"] = ""
         ud["audience"] = ""
         ud["user_input"] = None
+        # Стираем сохранённый профиль в БД — юзер хочет начать заново
+        try:
+            await clear_profile(query.from_user.id)
+        except Exception as e:
+            logger.warning(f"clear_profile failed: {e}")
 
         await query.edit_message_text(
             "🔄 Начинаем диагностику заново!\n\n"
