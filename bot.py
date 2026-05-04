@@ -1177,6 +1177,29 @@ async def reset_command(update: Update, context) -> int:
     except Exception as e:
         logger.warning(f"reset: failed to clear user/chat data: {e}")
     user_data_store.pop(user.id, None)
+
+    # Главное: сбрасываем state самого ConversationHandler. Без этого юзер
+    # остаётся "застрявшим" в каком-то state (например MAIN_MENU) и его текст
+    # уходит не в тот handler — бот молчит.
+    try:
+        conv = context.bot_data.get("conv_handler")
+        if conv is not None:
+            chat_id = update.effective_chat.id if update.effective_chat else user.id
+            # ConversationHandler хранит состояния в conv._conversations.
+            # Ключ зависит от per_chat/per_user (по умолчанию (chat_id, user_id)).
+            for key in list(conv._conversations.keys()):
+                if user.id in key or chat_id in key:
+                    conv._conversations.pop(key, None)
+            # Сбрасываем и в персистентности (PicklePersistence)
+            persistence = context.application.persistence
+            if persistence is not None:
+                try:
+                    await persistence.update_conversation(conv.name, (chat_id, user.id), None)
+                except Exception as e:
+                    logger.warning(f"reset: persistence.update_conversation failed: {e}")
+    except Exception as e:
+        logger.warning(f"reset: failed to clear conv state: {e}")
+
     if update.message:
         await update.message.reply_text(
             "🔄 Состояние сброшено. Нажми /start чтобы начать заново."
