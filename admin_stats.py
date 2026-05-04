@@ -7,7 +7,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from db import pool, get_last_snapshot, save_snapshot
+from db import get_last_snapshot, save_snapshot
+import db
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def is_admin(username: str | None) -> bool:
 
 async def compute_pay_stats() -> dict[str, int]:
     """Метрики платёжной воронки для команды /stats."""
+    pool = db.pool
     assert pool is not None
     async with pool.acquire() as conn:
         visitors = await conn.fetchval("SELECT COUNT(*) FROM bot_visitors") or 0
@@ -83,6 +85,7 @@ async def compute_pay_stats() -> dict[str, int]:
 
 async def compute_usage_stats() -> dict[str, int]:
     """Метрики использования для команды /usage_stats."""
+    pool = db.pool
     assert pool is not None
     async with pool.acquire() as conn:
         users_with_access = await conn.fetchval(
