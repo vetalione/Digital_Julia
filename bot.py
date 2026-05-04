@@ -411,8 +411,9 @@ async def start(update: Update, context) -> int:
 
     if not await require_access(update):
         return ConversationHandler.END
-    # Если был флаг post-payment — сбрасываем
-    context.user_data.pop("post_payment_pending", None)
+    # Полный сброс старого состояния (защита от "молчащего" бота после redeploy)
+    context.user_data.clear()
+    user_data_store.pop(user.id, None)
     await update.message.reply_text(
         f"Привет, {user.first_name}! 👋\n\n"
         "Я — бот ЦифроЮли 🎬\n\n"
@@ -1163,9 +1164,37 @@ async def handle_receipt_photo(update: Update, context) -> None:
         )
 
 
+async def reset_command(update: Update, context) -> int:
+    """Полный сброс состояния пользователя. Спасает, если бот "молчит" из-за
+    застрявшего ConversationHandler state в pickle-персистентности."""
+    user = update.effective_user
+    try:
+        context.user_data.clear()
+        context.chat_data.clear()
+    except Exception as e:
+        logger.warning(f"reset: failed to clear user/chat data: {e}")
+    user_data_store.pop(user.id, None)
+    if update.message:
+        await update.message.reply_text(
+            "🔄 Состояние сброшено. Нажми /start чтобы начать заново."
+        )
+    return ConversationHandler.END
+
+
 async def error_handler(update: object, context) -> None:
-    """Log unhandled exceptions from update handlers."""
+    """Log unhandled exceptions from update handlers and notify user."""
     logger.exception("Unhandled exception in update handler: %s", context.error)
+    try:
+        if isinstance(update, Update) and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=(
+                    "⚠️ Что-то пошло не так. Нажми /reset, а затем /start — "
+                    "это вернёт бота в рабочее состояние."
+                ),
+            )
+    except Exception:
+        pass
 
 
 def main():
@@ -1245,6 +1274,9 @@ def main():
     # Админ-команды статистики — только для @vetalsmirnov
     app.add_handler(CommandHandler("stats", admin_stats_pay), group=1)
     app.add_handler(CommandHandler("usage_stats", admin_stats_usage), group=1)
+
+    # /reset — глобальный сброс состояния (фикс "молчащего" бота после redeploy)
+    app.add_handler(CommandHandler("reset", reset_command), group=1)
 
     app.add_error_handler(error_handler)
     app.bot_data["conv_handler"] = conv
