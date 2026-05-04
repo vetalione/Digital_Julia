@@ -1201,42 +1201,6 @@ async def reset_command(update: Update, context) -> int:
     return ConversationHandler.END
 
 
-async def fallback_text_handler(update: Update, context) -> None:
-    """Ловит текст, который не попал ни в один state ConversationHandler.
-    Это бывает после редеплоя — in-memory state сбрасывается, юзер
-    вне диалога. Подсказываем нажать /start, чтобы не было ощущения 'бот молчит'."""
-    if not update.message or not update.effective_user:
-        return
-
-    # ВАЖНО: PTB по умолчанию запускает handler в КАЖДОЙ группе. Нужно вручную
-    # проверить — если юзер сейчас в активном state ConversationHandler,
-    # значит conv уже обработал это сообщение в group=0, а мы не должны.
-    try:
-        conv = context.bot_data.get("conv_handler")
-        if conv is not None:
-            user_id = update.effective_user.id
-            chat_id = update.effective_chat.id if update.effective_chat else user_id
-            key = (chat_id, user_id)
-            if conv._conversations.get(key) is not None:
-                return  # юзер в активном диалоге — conv сам ответит
-    except Exception as e:
-        logger.warning(f"fallback_text_handler: conv state check failed: {e}")
-
-    try:
-        has_access = await check_access(update.effective_user.id, update.effective_user.username)
-    except Exception:
-        has_access = False
-    if has_access:
-        await update.message.reply_text(
-            "🤔 Не понял твоё сообщение. Видимо ты вне активного диалога.\n\n"
-            "Нажми /start чтобы начать диагностику и сгенерировать сценарий 🚀"
-        )
-    else:
-        await update.message.reply_text(
-            "Привет! 👋 Чтобы начать пользоваться ботом, нажми /start."
-        )
-
-
 async def error_handler(update: object, context) -> None:
     """Log unhandled exceptions from update handlers and notify user."""
     logger.exception("Unhandled exception in update handler: %s", context.error)
@@ -1335,14 +1299,6 @@ def main():
 
     # /reset — глобальный сброс состояния (фикс "молчащего" бота после redeploy)
     app.add_handler(CommandHandler("reset", reset_command), group=1)
-
-    # Fallback: любой текст, который не попал ни в один хендлер (юзер пишет
-    # вне активного диалога) — подсказываем нажать /start. Группа 10, чтобы
-    # выполнялся ПОСЛЕ всех основных group=0/1 и только если они не сработали.
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text_handler),
-        group=10,
-    )
 
     app.add_error_handler(error_handler)
     app.bot_data["conv_handler"] = conv
