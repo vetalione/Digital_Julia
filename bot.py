@@ -46,7 +46,7 @@ from prompts import (
 )
 from db import (
     init_db, close_db, check_access, get_access_until, log_visit,
-    grant_access, get_receipt_by_hash, save_receipt_upload,
+    grant_access, get_receipt_by_hash, save_receipt_upload, log_pay_click,
 )
 from receipt_validator import validate_receipt, image_sha256
 from webhook_server import create_webhook_app
@@ -894,6 +894,10 @@ async def pay_direct_uah_callback(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     context.user_data["awaiting_receipt"] = True
+    try:
+        await log_pay_click(query.from_user.id, query.from_user.username, "direct_uah")
+    except Exception as e:
+        logger.warning(f"log_pay_click failed: {e}")
 
     text = (
         "🇦 *Прямая оплата в гривнах*\n\n"

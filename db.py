@@ -59,6 +59,17 @@ async def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_receipt_uploads_user
                 ON receipt_uploads (telegram_user_id);
+            CREATE TABLE IF NOT EXISTS pay_clicks (
+                id SERIAL PRIMARY KEY,
+                telegram_user_id BIGINT NOT NULL,
+                telegram_username TEXT,
+                method TEXT NOT NULL,
+                clicked_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_pay_clicks_user
+                ON pay_clicks (telegram_user_id);
+            CREATE INDEX IF NOT EXISTS idx_pay_clicks_method
+                ON pay_clicks (method);
         """)
     logger.info("Database initialized")
 
@@ -249,4 +260,21 @@ async def save_receipt_upload(
         extracted_date,
         is_valid,
         reason,
+    )
+
+
+async def log_pay_click(
+    telegram_user_id: int,
+    telegram_username: str | None,
+    method: str,
+) -> None:
+    """Фиксирует нажатие кнопки оплаты любым способом. method: 'direct_uah' | 'tribute_web' | 'tribute_stars'"""
+    if not pool:
+        return
+    await pool.execute(
+        """INSERT INTO pay_clicks (telegram_user_id, telegram_username, method)
+           VALUES ($1, $2, $3)""",
+        telegram_user_id,
+        telegram_username,
+        method,
     )
