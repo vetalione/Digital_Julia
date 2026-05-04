@@ -1207,6 +1207,21 @@ async def fallback_text_handler(update: Update, context) -> None:
     вне диалога. Подсказываем нажать /start, чтобы не было ощущения 'бот молчит'."""
     if not update.message or not update.effective_user:
         return
+
+    # ВАЖНО: PTB по умолчанию запускает handler в КАЖДОЙ группе. Нужно вручную
+    # проверить — если юзер сейчас в активном state ConversationHandler,
+    # значит conv уже обработал это сообщение в group=0, а мы не должны.
+    try:
+        conv = context.bot_data.get("conv_handler")
+        if conv is not None:
+            user_id = update.effective_user.id
+            chat_id = update.effective_chat.id if update.effective_chat else user_id
+            key = (chat_id, user_id)
+            if conv._conversations.get(key) is not None:
+                return  # юзер в активном диалоге — conv сам ответит
+    except Exception as e:
+        logger.warning(f"fallback_text_handler: conv state check failed: {e}")
+
     try:
         has_access = await check_access(update.effective_user.id, update.effective_user.username)
     except Exception:
