@@ -47,8 +47,10 @@ from prompts import (
 from db import (
     init_db, close_db, check_access, get_access_until, log_visit,
     grant_access, get_receipt_by_hash, save_receipt_upload, log_pay_click,
+    log_event,
 )
 from receipt_validator import validate_receipt, image_sha256
+from admin_stats import is_admin, stats_command_pay, stats_command_usage
 from webhook_server import create_webhook_app
 
 logging.basicConfig(
@@ -339,10 +341,10 @@ async def transcribe_voice(file_path: str) -> str:
 
 # ── Хендлеры ────────────────────────────────────────────────────────
 def payment_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard с кнопками оплаты."""
+    """Keyboard с кнопками оплаты. Все три — callback'и для трекинга кликов."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Оплатить доступ", url="https://web.tribute.tg/p/uzV")],
-        [InlineKeyboardButton("⭐ Оплата звёздами", url="https://t.me/tribute/app?startapp=puzV")],
+        [InlineKeyboardButton("💳 Оплатить картой", callback_data="pay_card")],
+        [InlineKeyboardButton("⭐ Оплата звёздами", callback_data="pay_stars")],
         [InlineKeyboardButton("🇦 Оплатить напрямую (₴)", callback_data="pay_direct_uah")],
     ])
 
@@ -485,6 +487,11 @@ async def ask_audience(update: Update, context) -> int:
         context.bot, update.effective_user.id,
         f"🔍 **Результаты диагностики:**\n\n{tips}",
     )
+
+    try:
+        await log_event(update.effective_user.id, "diagnostic_done")
+    except Exception as e:
+        logger.warning(f"log_event diagnostic_done failed: {e}")
 
     await update.message.reply_text(
         "Что хочешь сделать дальше? 👇",
@@ -703,6 +710,10 @@ async def choose_news(update: Update, context) -> int:
         )
         news_text = await search_news(news_prompt)
         ud["news_list"] = parse_news_items(news_text)
+        try:
+            await log_event(query.from_user.id, "news_searched", {"refresh": True})
+        except Exception as e:
+            logger.warning(f"log_event news_searched(refresh) failed: {e}")
 
         news_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("1️⃣", callback_data="news_0"),
@@ -726,6 +737,10 @@ async def choose_news(update: Update, context) -> int:
         chosen_news = news_lines[0] if news_lines else "Актуальная новость по нише"
 
     ud["user_input"] = f"Новость для Reels: {chosen_news}"
+    try:
+        await log_event(query.from_user.id, "news_used", {"index": news_idx})
+    except Exception as e:
+        logger.warning(f"log_event news_used failed: {e}")
 
     await query.edit_message_text(
         f"Выбрана новость: {chosen_news} ✅\n\n"
@@ -779,6 +794,20 @@ async def choose_duration(update: Update, context) -> int:
         SCENARIO_SYSTEM_PROMPT, user_prompt,
     )
 
+    try:
+        await log_event(
+            query.from_user.id,
+            "scenario_generated",
+            {
+                "style": ud["settings"].get("style"),
+                "target": ud["settings"].get("target"),
+                "duration": ud["settings"].get("duration"),
+                "from_user_input": bool(ud.get("user_input")),
+            },
+        )
+    except Exception as e:
+        logger.warning(f"log_event scenario_generated failed: {e}")
+
     await safe_send_bot(
         context.bot, query.from_user.id, scenario,
         reply_markup=after_scenario_keyboard(),
@@ -814,6 +843,21 @@ async def after_scenario_handler(update: Update, context) -> int:
             context.bot, query.from_user.id,
             SCENARIO_SYSTEM_PROMPT, user_prompt,
         )
+
+        try:
+            await log_event(
+                query.from_user.id,
+                "scenario_generated",
+                {
+                    "style": ud["settings"].get("style"),
+                    "target": ud["settings"].get("target"),
+                    "duration": ud["settings"].get("duration"),
+                    "from_user_input": bool(ud.get("user_input")),
+                    "regenerate": True,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"log_event regenerate failed: {e}")
 
         await safe_send_bot(
             context.bot, query.from_user.id, scenario,
@@ -873,6 +917,31 @@ async def cancel(update: Update, context) -> int:
     return ConversationHandler.END
 
 
+# ── Админ-команды статистики ─────────────────────────────
+async def admin_stats_pay(update: Update, context) -> None:
+    user = update.effective_user
+    if not is_admin(user.username):
+        return  # молча игнорируем
+    try:
+        text = await stats_command_pay(user.id)
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        logger.exception(f"/stats failed: {e}")
+        await update.message.reply_text(f"⚠️ Ошибка: {e}")
+
+
+async def admin_stats_usage(update: Update, context) -> None:
+    user = update.effective_user
+    if not is_admin(user.username):
+        return
+    try:
+        text = await stats_command_usage(user.id)
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        logger.exception(f"/usage_stats failed: {e}")
+        await update.message.reply_text(f"⚠️ Ошибка: {e}")
+
+
 # ── Прямая оплата в гривнах ────────────────────────────────────────
 
 def _direct_pay_assistant_keyboard() -> InlineKeyboardMarkup:
@@ -887,6 +956,50 @@ def _payment_failure_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💬 Написать ассистенту", url=ASSISTANT_TG)],
         [InlineKeyboardButton("🔁 Прислать другой скриншот", callback_data="pay_direct_uah")],
     ])
+
+
+async def pay_card_callback(update: Update, context) -> None:
+    """Юзер нажал «Оплатить картой» — логируем клик, шлём ссылку Tribute."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await log_pay_click(query.from_user.id, query.from_user.username, "tribute_web")
+    except Exception as e:
+        logger.warning(f"log_pay_click failed: {e}")
+    await query.message.reply_text(
+        "💳 *Оплата картой*\n\n"
+        "Нажми на кнопку ниже — откроется страница Tribute с формой оплаты.\n\n"
+        "Если ссылка не открывается или поля не нажимаются — попробуй другой "
+        "способ оплаты (звёздами или прямым переводом в гривнах) или напиши ассистенту 👇",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Перейти к оплате", url="https://web.tribute.tg/p/uzV")],
+            [InlineKeyboardButton("⬅️ Другие способы оплаты", callback_data="pay_back")],
+            [InlineKeyboardButton("💬 Написать ассистенту", url=ASSISTANT_TG)],
+        ]),
+    )
+
+
+async def pay_stars_callback(update: Update, context) -> None:
+    """Юзер нажал «Оплата звёздами» — логируем клик, шлём ссылку на mini-app."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await log_pay_click(query.from_user.id, query.from_user.username, "tribute_stars")
+    except Exception as e:
+        logger.warning(f"log_pay_click failed: {e}")
+    await query.message.reply_text(
+        "⭐ *Оплата звёздами Telegram*\n\n"
+        "Нажми на кнопку ниже — откроется mini-app Tribute прямо в Telegram.\n\n"
+        "_Курс звёзд может отличаться по гео. Если стоимость кажется завышенной — "
+        "попробуй оплату картой или прямым переводом гривной._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⭐ Перейти к оплате", url="https://t.me/tribute/app?startapp=puzV")],
+            [InlineKeyboardButton("⬅️ Другие способы оплаты", callback_data="pay_back")],
+            [InlineKeyboardButton("💬 Написать ассистенту", url=ASSISTANT_TG)],
+        ]),
+    )
 
 
 async def pay_direct_uah_callback(update: Update, context) -> None:
@@ -1123,9 +1236,15 @@ def main():
 
     # Глобальные хендлеры прямой оплаты в гривнах (работают вне ConversationHandler,
     # чтобы быть доступными неоплаченным пользователям).
+    app.add_handler(CallbackQueryHandler(pay_card_callback, pattern=r"^pay_card$"), group=1)
+    app.add_handler(CallbackQueryHandler(pay_stars_callback, pattern=r"^pay_stars$"), group=1)
     app.add_handler(CallbackQueryHandler(pay_direct_uah_callback, pattern=r"^pay_direct_uah$"), group=1)
     app.add_handler(CallbackQueryHandler(pay_back_callback, pattern=r"^pay_back$"), group=1)
     app.add_handler(MessageHandler(filters.PHOTO, handle_receipt_photo), group=1)
+
+    # Админ-команды статистики — только для @vetalsmirnov
+    app.add_handler(CommandHandler("stats", admin_stats_pay), group=1)
+    app.add_handler(CommandHandler("usage_stats", admin_stats_usage), group=1)
 
     app.add_error_handler(error_handler)
     app.bot_data["conv_handler"] = conv

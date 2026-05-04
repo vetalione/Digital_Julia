@@ -70,6 +70,24 @@ async def init_db():
                 ON pay_clicks (telegram_user_id);
             CREATE INDEX IF NOT EXISTS idx_pay_clicks_method
                 ON pay_clicks (method);
+            CREATE TABLE IF NOT EXISTS events (
+                id BIGSERIAL PRIMARY KEY,
+                telegram_user_id BIGINT NOT NULL,
+                event_type TEXT NOT NULL,
+                meta JSONB,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type);
+            CREATE INDEX IF NOT EXISTS idx_events_user ON events (telegram_user_id);
+            CREATE TABLE IF NOT EXISTS admin_stat_snapshots (
+                id BIGSERIAL PRIMARY KEY,
+                admin_user_id BIGINT NOT NULL,
+                command TEXT NOT NULL,
+                snapshot JSONB NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_admin_snapshots
+                ON admin_stat_snapshots (admin_user_id, command, created_at DESC);
         """)
     logger.info("Database initialized")
 
@@ -277,4 +295,53 @@ async def log_pay_click(
         telegram_user_id,
         telegram_username,
         method,
+    )
+
+
+async def log_event(
+    telegram_user_id: int,
+    event_type: str,
+    meta: dict | None = None,
+) -> None:
+    """Логирует произвольное событие использования бота."""
+    if not pool:
+        return
+    import json as _json
+    await pool.execute(
+        "INSERT INTO events (telegram_user_id, event_type, meta) VALUES ($1, $2, $3::jsonb)",
+        telegram_user_id,
+        event_type,
+        _json.dumps(meta) if meta else None,
+    )
+
+
+async def get_last_snapshot(admin_user_id: int, command: str) -> dict | None:
+    """Возвращает последний снапшот статистики для этого админа+команды."""
+    if not pool:
+        return None
+    row = await pool.fetchrow(
+        """SELECT snapshot FROM admin_stat_snapshots
+           WHERE admin_user_id = $1 AND command = $2
+           ORDER BY created_at DESC LIMIT 1""",
+        admin_user_id,
+        command,
+    )
+    if not row:
+        return None
+    import json as _json
+    s = row["snapshot"]
+    return _json.loads(s) if isinstance(s, str) else dict(s)
+
+
+async def save_snapshot(admin_user_id: int, command: str, snapshot: dict) -> None:
+    """Сохраняет новый снапшот статистики."""
+    if not pool:
+        return
+    import json as _json
+    await pool.execute(
+        """INSERT INTO admin_stat_snapshots (admin_user_id, command, snapshot)
+           VALUES ($1, $2, $3::jsonb)""",
+        admin_user_id,
+        command,
+        _json.dumps(snapshot),
     )
