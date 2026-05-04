@@ -1141,16 +1141,10 @@ async def handle_receipt_photo(update: Update, context) -> None:
         await msg.reply_text(
             "✅ *Оплата получена!*\n\n"
             "Доступ к боту активирован 🎉\n\n"
-            "Для начала давай проведём быструю диагностику и потом "
-            "сгенерируем твой первый сценарий Reels 🎬\n\n"
-            "Напиши коротко, *в какой ты нише?*\n"
-            "Например: маркетинг, фитнес, психология, бьюти, коучинг, e-commerce...",
+            "Нажми /start чтобы начать диагностику и сгенерировать "
+            "свой первый сценарий Reels 🎬",
             parse_mode="Markdown",
         )
-
-        # Ставим флаг: следующее текстовое сообщение юзера попадёт в post_payment_entry
-        # и запустит флоу диагностики в ASK_NICHE.
-        context.user_data["post_payment_pending"] = True
 
         logger.info(f"Direct UAH access granted to {user.id} (@{user.username}) until {until}")
 
@@ -1207,6 +1201,27 @@ async def reset_command(update: Update, context) -> int:
     return ConversationHandler.END
 
 
+async def fallback_text_handler(update: Update, context) -> None:
+    """Ловит текст, который не попал ни в один state ConversationHandler.
+    Это бывает после редеплоя — in-memory state сбрасывается, юзер
+    вне диалога. Подсказываем нажать /start, чтобы не было ощущения 'бот молчит'."""
+    if not update.message or not update.effective_user:
+        return
+    try:
+        has_access = await check_access(update.effective_user.id, update.effective_user.username)
+    except Exception:
+        has_access = False
+    if has_access:
+        await update.message.reply_text(
+            "🤔 Не понял твоё сообщение. Видимо ты вне активного диалога.\n\n"
+            "Нажми /start чтобы начать диагностику и сгенерировать сценарий 🚀"
+        )
+    else:
+        await update.message.reply_text(
+            "Привет! 👋 Чтобы начать пользоваться ботом, нажми /start."
+        )
+
+
 async def error_handler(update: object, context) -> None:
     """Log unhandled exceptions from update handlers and notify user."""
     logger.exception("Unhandled exception in update handler: %s", context.error)
@@ -1241,7 +1256,6 @@ def main():
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, post_payment_entry),
         ],
         states={
             ASK_NICHE: [
@@ -1283,8 +1297,11 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
-        name="main_conv",
-        persistent=True,
+        # Состояние диалога живёт ТОЛЬКО в памяти процесса. После редеплоя
+        # все юзеры начинают с чистого листа через /start. Это сознательный трейд-офф:
+        # PicklePersistence + persistent=True приводило к "застрявшим" state после
+        # обновлений кода. user_data всё равно персистится (Application.persistence).
+        persistent=False,
     )
 
     app.add_handler(conv)
@@ -1303,6 +1320,14 @@ def main():
 
     # /reset — глобальный сброс состояния (фикс "молчащего" бота после redeploy)
     app.add_handler(CommandHandler("reset", reset_command), group=1)
+
+    # Fallback: любой текст, который не попал ни в один хендлер (юзер пишет
+    # вне активного диалога) — подсказываем нажать /start. Группа 10, чтобы
+    # выполнялся ПОСЛЕ всех основных group=0/1 и только если они не сработали.
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text_handler),
+        group=10,
+    )
 
     app.add_error_handler(error_handler)
     app.bot_data["conv_handler"] = conv

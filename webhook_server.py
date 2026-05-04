@@ -77,20 +77,11 @@ async def handle_tribute_webhook(request: web.Request) -> web.Response:
                         text=(
                             "✅ *Оплата получена!*\n\n"
                             "Доступ к боту активирован 🎉\n\n"
-                            "Для начала давай проведём быструю диагностику и потом "
-                            "сгенерируем твой первый сценарий Reels 🎬\n\n"
-                            "Напиши коротко, *в какой ты нише?*\n"
-                            "Например: маркетинг, фитнес, психология, бьюти, коучинг, e-commerce..."
+                            "Нажми /start чтобы начать диагностику и сгенерировать "
+                            "свой первый сценарий Reels 🎬"
                         ),
                         parse_mode="Markdown",
                     )
-                    # Ставим флаг post-payment в user_data юзера.
-                    # Следующее текстовое сообщение будет поймано post_payment_entry
-                    # в ConversationHandler и запустит флоу диагностики.
-                    try:
-                        ptb_app.user_data[telegram_user_id]["post_payment_pending"] = True
-                    except Exception as e:
-                        logger.warning(f"Failed to set post_payment_pending flag: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to notify user {telegram_user_id} about payment: {e}")
 
