@@ -84,16 +84,13 @@ async def handle_tribute_webhook(request: web.Request) -> web.Response:
                         ),
                         parse_mode="Markdown",
                     )
-                    # Ставим юзера в состояние ASK_NICHE, чтобы следующее сообщение
-                    # подхватил ConversationHandler и пошёл по флоу диагностики
-                    conv = ptb_app.bot_data.get("conv_handler")
-                    if conv is not None:
-                        ASK_NICHE_STATE = 0  # см. bot.py: первый state
-                        key = (telegram_user_id, telegram_user_id)
-                        try:
-                            conv._conversations[key] = ASK_NICHE_STATE
-                        except Exception as e:
-                            logger.warning(f"Failed to set conv state: {e}")
+                    # Ставим флаг post-payment в user_data юзера.
+                    # Следующее текстовое сообщение будет поймано post_payment_entry
+                    # в ConversationHandler и запустит флоу диагностики.
+                    try:
+                        ptb_app.user_data[telegram_user_id]["post_payment_pending"] = True
+                    except Exception as e:
+                        logger.warning(f"Failed to set post_payment_pending flag: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to notify user {telegram_user_id} about payment: {e}")
 

@@ -409,6 +409,8 @@ async def start(update: Update, context) -> int:
 
     if not await require_access(update):
         return ConversationHandler.END
+    # Если был флаг post-payment — сбрасываем
+    context.user_data.pop("post_payment_pending", None)
     await update.message.reply_text(
         f"Привет, {user.first_name}! 👋\n\n"
         "Я — бот ЦифроЮли 🎬\n\n"
@@ -422,6 +424,16 @@ async def start(update: Update, context) -> int:
         parse_mode="Markdown",
     )
     return ASK_NICHE
+
+
+async def post_payment_entry(update: Update, context) -> int:
+    """Entry-point для ConversationHandler: ловит первое текстовое сообщение юзера
+    после успешной оплаты и вводит его в флоу диагностики как в ASK_NICHE.
+    Если флаг не выставлен — возвращаем END, чтобы не ловить чужие сообщения."""
+    if not context.user_data.get("post_payment_pending"):
+        return ConversationHandler.END
+    context.user_data.pop("post_payment_pending", None)
+    return await ask_niche(update, context)
 
 
 async def ask_niche(update: Update, context) -> int:
@@ -1015,13 +1027,9 @@ async def handle_receipt_photo(update: Update, context) -> None:
             parse_mode="Markdown",
         )
 
-        # Ставим юзера в ASK_NICHE — следующее сообщение подхватит ConversationHandler
-        try:
-            conv = context.application.bot_data.get("conv_handler")
-            if conv is not None:
-                conv._conversations[(user.id, user.id)] = ASK_NICHE
-        except Exception as e:
-            logger.warning(f"Failed to set conv state after receipt: {e}")
+        # Ставим флаг: следующее текстовое сообщение юзера попадёт в post_payment_entry
+        # и запустит флоу диагностики в ASK_NICHE.
+        context.user_data["post_payment_pending"] = True
 
         logger.info(f"Direct UAH access granted to {user.id} (@{user.username}) until {until}")
 
@@ -1059,7 +1067,10 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(persistence).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, post_payment_entry),
+        ],
         states={
             ASK_NICHE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_niche),
