@@ -116,6 +116,23 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def _md_escape(text: str) -> str:
+    """Экранирует спецсимволы legacy-Markdown, чтобы текст профиля не ломал парсинг."""
+    if not text:
+        return ""
+    for ch in ("\\", "_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
+def _short(text: str, limit: int = 200) -> str:
+    """Обрезает длинное поле профиля для показа в сообщении (защита от лимита 4096)."""
+    if not text:
+        return ""
+    text = " ".join(text.split())  # схлопываем переносы/множественные пробелы
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
 def model_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура выбора нейросети. Показывает только доступные (с API-ключом)."""
     buttons = []
@@ -497,18 +514,34 @@ async def start(update: Update, context) -> int:
         ud["audience"] = profile["audience"]
         ud["model"] = normalize_model(profile.get("preferred_model"))
         limit_note = "" if has_access else f"\n🎁 Бесплатных сценариев осталось: *{left}*\n"
-        await update.message.reply_text(
-            f"С возвращением, {user.first_name}! 👋\n\n"
-            f"Твой профиль уже сохранён:\n"
-            f"• *Ниша:* {profile['niche']}\n"
-            f"• *Продукт:* {profile['product']}\n"
-            f"• *ЦА:* {profile['audience']}\n"
-            f"• *Нейросеть:* {model_name(ud['model'])}\n"
-            f"{limit_note}\n"
-            f"Что хочешь сделать? 👇",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
-        )
+        # Поля профиля могут быть очень длинными (юзер вставил документ) или
+        # содержать спецсимволы Markdown — обрезаем и экранируем, чтобы не
+        # упереться в лимит 4096 и не сломать парсинг (иначе start() падает и
+        # юзер застревает в цикле /reset → /start → ошибка).
+        niche_d = _md_escape(_short(profile["niche"]))
+        product_d = _md_escape(_short(profile["product"]))
+        audience_d = _md_escape(_short(profile["audience"]))
+        try:
+            await update.message.reply_text(
+                f"С возвращением, {user.first_name}! 👋\n\n"
+                f"Твой профиль уже сохранён:\n"
+                f"• *Ниша:* {niche_d}\n"
+                f"• *Продукт:* {product_d}\n"
+                f"• *ЦА:* {audience_d}\n"
+                f"• *Нейросеть:* {model_name(ud['model'])}\n"
+                f"{limit_note}\n"
+                f"Что хочешь сделать? 👇",
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard(),
+            )
+        except Exception as e:
+            # Фоллбэк без Markdown — гарантированно доставляем меню
+            logger.warning(f"start: returning-user message failed, plain fallback: {e}")
+            await update.message.reply_text(
+                f"С возвращением, {user.first_name}! 👋\n\n"
+                "Твой профиль уже сохранён. Что хочешь сделать? 👇",
+                reply_markup=main_menu_keyboard(),
+            )
         return MAIN_MENU
 
     free_note = (
