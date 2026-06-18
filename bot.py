@@ -26,6 +26,7 @@ from openai import OpenAI, AsyncOpenAI
 from config import (
     TELEGRAM_BOT_TOKEN, OPENAI_API_KEY,
     TRIBUTE_PRODUCT_LINK, PORT, RAILWAY_PUBLIC_DOMAIN,
+    FREE_SCENARIO_LIMIT,
 )
 
 JULIA_TG = "https://t.me/JFilipenko"
@@ -48,6 +49,11 @@ from db import (
     init_db, close_db, check_access, get_access_until, log_visit,
     grant_access, get_receipt_by_hash, save_receipt_upload, log_pay_click,
     log_event, get_profile, save_profile, clear_profile,
+    set_preferred_model, get_preferred_model, count_scenarios,
+)
+from ai_providers import (
+    MODELS, DEFAULT_MODEL, available_models, model_name,
+    normalize_model, generate_scenario,
 )
 from receipt_validator import validate_receipt, image_sha256
 from admin_stats import is_admin, stats_command_pay, stats_command_usage
@@ -76,7 +82,8 @@ async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     CHOOSE_TARGET,
     CHOOSE_DURATION,
     SHOW_SCENARIO,
-) = range(13)
+    CHOOSE_MODEL,
+) = range(14)
 
 # ── Хранилище данных юзеров (in-memory) ────────────────────────────
 user_data_store: dict[int, dict] = {}
@@ -91,6 +98,7 @@ def get_user(user_id: int) -> dict:
             "user_input": None,
             "settings": {"style": "", "target": "", "duration": ""},
             "news_list": [],
+            "model": DEFAULT_MODEL,
         }
     return user_data_store[user_id]
 
@@ -100,11 +108,66 @@ def get_user(user_id: int) -> dict:
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 Сгенерировать сценарий Reels", callback_data="generate_scenario")],
+        [InlineKeyboardButton("🤖 Сменить нейросеть", callback_data="change_model")],
         [InlineKeyboardButton("🎓 Посмотреть программу курса", callback_data="show_course")],
         [InlineKeyboardButton("📋 Запись на консультацию — 200$", url=JULIA_TG)],
         [InlineKeyboardButton("🎤 Попасть на разбор — 100$", url=JULIA_TG)],
         [InlineKeyboardButton("🔄 Пройти диагностику заново", callback_data="restart_diagnosis")],
     ])
+
+
+def model_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора нейросети. Показывает только доступные (с API-ключом)."""
+    buttons = []
+    for key, meta in available_models().items():
+        buttons.append([InlineKeyboardButton(meta["name"], callback_data=f"model_{key}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def resolve_user_model(user_id: int, ud: dict) -> str:
+    """Возвращает актуальную модель юзера: из памяти, иначе из БД, иначе дефолт."""
+    model = ud.get("model")
+    if not model:
+        try:
+            model = await get_preferred_model(user_id)
+        except Exception as e:
+            logger.warning(f"get_preferred_model failed: {e}")
+            model = None
+    model = normalize_model(model)
+    ud["model"] = model
+    return model
+
+
+async def free_scenarios_left(user_id: int, username: str | None) -> int | None:
+    """Сколько бесплатных сценариев осталось. None = безлимит (есть доступ)."""
+    try:
+        if await check_access(user_id, username):
+            return None
+    except Exception as e:
+        logger.warning(f"check_access in free_scenarios_left failed: {e}")
+    try:
+        used = await count_scenarios(user_id)
+    except Exception as e:
+        logger.warning(f"count_scenarios failed: {e}")
+        used = 0
+    return max(0, FREE_SCENARIO_LIMIT - used)
+
+
+async def send_paywall(bot, chat_id: int) -> None:
+    """Отправляет сообщение об исчерпании бесплатных сценариев + кнопки оплаты."""
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"🎁 Бесплатные сценарии закончились — ты использовал(а) все {FREE_SCENARIO_LIMIT}!\n\n"
+            "Надеюсь, ты увидел(а), насколько круто я генерирую Reels под твою нишу 🚀\n\n"
+            "💳 *Доступ — 35$ на 30 дней*\n"
+            "Безлимитная генерация сценариев на любой из нейросетей "
+            "(ChatGPT, Claude, Gemini), без ограничений.\n\n"
+            "Готов(а) продолжить? Выбери способ оплаты 👇"
+        ),
+        parse_mode="Markdown",
+        reply_markup=payment_keyboard(),
+    )
 
 
 def after_scenario_keyboard() -> InlineKeyboardMarkup:
@@ -298,6 +361,28 @@ async def stream_ai_to_chat(bot, chat_id: int, system_prompt: str, user_prompt: 
         return await call_ai(system_prompt, user_prompt)
 
 
+async def generate_scenario_with_model(
+    bot, chat_id: int, model_key: str, system_prompt: str, user_prompt: str
+) -> str:
+    """Генерирует сценарий выбранной нейросетью.
+    Для GPT используем стриминг в чат (через Telegram draft), для остальных —
+    обычная генерация с индикатором ожидания."""
+    model_key = normalize_model(model_key)
+    if MODELS.get(model_key, {}).get("provider") == "openai":
+        return await stream_ai_to_chat(bot, chat_id, system_prompt, user_prompt)
+
+    # Claude / Gemini — без стриминга
+    try:
+        raw = await generate_scenario(model_key, system_prompt, user_prompt)
+        if not raw:
+            return "Не удалось сгенерировать ответ."
+        return clean_md_for_telegram(strip_followup(raw))
+    except Exception as e:
+        logger.error(f"generate_scenario_with_model error ({model_key}): {e}")
+        # Финальный фоллбэк на GPT-стриминг
+        return await stream_ai_to_chat(bot, chat_id, system_prompt, user_prompt)
+
+
 async def search_news(user_prompt: str) -> str:
     """Поиск реальных новостей через модель с веб-поиском."""
     try:
@@ -409,11 +494,14 @@ async def start(update: Update, context) -> int:
     except Exception as e:
         logger.warning(f"log_visit failed: {e}")
 
-    if not await require_access(update):
-        return ConversationHandler.END
     # Полный сброс старого состояния (защита от "молчащего" бота после redeploy)
     context.user_data.clear()
     user_data_store.pop(user.id, None)
+
+    # Доступ больше не блокирует вход: даём 3 бесплатных сценария.
+    # has_access нужен только чтобы подобрать текст приветствия.
+    left = await free_scenarios_left(user.id, user.username)
+    has_access = left is None
 
     # Если у юзера уже есть сохранённый профиль (ниша/продукт/ЦА) —
     # пропускаем диагностику и сразу ведём в главное меню.
@@ -428,18 +516,26 @@ async def start(update: Update, context) -> int:
         ud["niche"] = profile["niche"]
         ud["product"] = profile["product"]
         ud["audience"] = profile["audience"]
+        ud["model"] = normalize_model(profile.get("preferred_model"))
+        limit_note = "" if has_access else f"\n🎁 Бесплатных сценариев осталось: *{left}*\n"
         await update.message.reply_text(
             f"С возвращением, {user.first_name}! 👋\n\n"
             f"Твой профиль уже сохранён:\n"
             f"• *Ниша:* {profile['niche']}\n"
             f"• *Продукт:* {profile['product']}\n"
-            f"• *ЦА:* {profile['audience']}\n\n"
+            f"• *ЦА:* {profile['audience']}\n"
+            f"• *Нейросеть:* {model_name(ud['model'])}\n"
+            f"{limit_note}\n"
             f"Что хочешь сделать? 👇",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(),
         )
         return MAIN_MENU
 
+    free_note = (
+        "🎁 *3 первых сценария — бесплатно!* Попробуй без оплаты.\n\n"
+        if not has_access else ""
+    )
     await update.message.reply_text(
         f"Привет, {user.first_name}! 👋\n\n"
         "Я — бот ЦифроЮли 🎬\n\n"
@@ -447,6 +543,7 @@ async def start(update: Update, context) -> int:
         "• Разобраться, какой контент снимать для твоей ниши\n"
         "• Получить советы по визуалу, хукам и смыслам\n"
         "• Сгенерировать готовый сценарий Reels\n\n"
+        f"{free_note}"
         "Для начала давай проведём быструю диагностику 🔍\n\n"
         "**В какой ты нише?**\n"
         "Например: маркетинг, фитнес, психология, бьюти, коучинг, e-commerce...",
@@ -529,8 +626,52 @@ async def ask_audience(update: Update, context) -> int:
     except Exception as e:
         logger.warning(f"save_profile failed: {e}")
 
+    # Если юзер ещё не выбирал нейросеть — предлагаем выбрать (один раз).
+    chosen = None
+    try:
+        chosen = await get_preferred_model(update.effective_user.id)
+    except Exception as e:
+        logger.warning(f"get_preferred_model failed: {e}")
+
+    avail = available_models()
+    if not chosen and len(avail) > 1:
+        await update.message.reply_text(
+            "🤖 *Выбери нейросеть для генерации сценариев:*\n\n"
+            "Можно будет сменить в любой момент через меню.",
+            parse_mode="Markdown",
+            reply_markup=model_keyboard(),
+        )
+        return CHOOSE_MODEL
+
+    # Иначе фиксируем дефолт/единственную модель и идём в меню
+    ud["model"] = normalize_model(chosen)
     await update.message.reply_text(
         "Что хочешь сделать дальше? 👇",
+        reply_markup=main_menu_keyboard(),
+    )
+    return MAIN_MENU
+
+
+async def choose_model(update: Update, context) -> int:
+    """Юзер выбрал нейросеть. Сохраняем и ведём в меню."""
+    query = update.callback_query
+    await query.answer()
+    ud = get_user(query.from_user.id)
+
+    model_key = normalize_model(query.data.replace("model_", ""))
+    ud["model"] = model_key
+    try:
+        await set_preferred_model(query.from_user.id, model_key)
+    except Exception as e:
+        logger.warning(f"set_preferred_model failed: {e}")
+
+    await query.edit_message_text(
+        f"Готово! Сценарии будет генерировать *{model_name(model_key)}* ✅",
+        parse_mode="Markdown",
+    )
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text="Что хочешь сделать дальше? 👇",
         reply_markup=main_menu_keyboard(),
     )
     return MAIN_MENU
@@ -564,8 +705,19 @@ async def main_menu_handler(update: Update, context) -> int:
         return MAIN_MENU
 
     elif query.data == "generate_scenario":
+        # Проверяем лимит бесплатных сценариев
+        left = await free_scenarios_left(query.from_user.id, query.from_user.username)
+        if left is not None and left <= 0:
+            await query.edit_message_reply_markup(reply_markup=None)
+            await send_paywall(context.bot, query.from_user.id)
+            return MAIN_MENU
+
+        ud = get_user(query.from_user.id)
+        await resolve_user_model(query.from_user.id, ud)
+        left_note = "" if left is None else f"\n🎁 Бесплатных сценариев осталось: {left}"
         await query.edit_message_text(
             "🎬 **Генерация сценария Reels**\n\n"
+            f"Нейросеть: {model_name(ud['model'])}{left_note}\n\n"
             "У тебя уже есть задумка или идея для ролика?\n\n"
             "Выбери вариант 👇",
             parse_mode="Markdown",
@@ -576,6 +728,21 @@ async def main_menu_handler(update: Update, context) -> int:
             ]),
         )
         return SCENARIO_INPUT_CHOICE
+
+    elif query.data == "change_model":
+        avail = available_models()
+        if len(avail) <= 1:
+            await query.answer("Доступна только одна нейросеть", show_alert=True)
+            return MAIN_MENU
+        ud = get_user(query.from_user.id)
+        await resolve_user_model(query.from_user.id, ud)
+        await query.edit_message_text(
+            f"🤖 *Текущая нейросеть:* {model_name(ud['model'])}\n\n"
+            "Выбери, какой генерировать сценарии 👇",
+            parse_mode="Markdown",
+            reply_markup=model_keyboard(),
+        )
+        return CHOOSE_MODEL
 
     elif query.data == "restart_diagnosis":
         ud = get_user(query.from_user.id)
@@ -818,7 +985,17 @@ async def choose_duration(update: Update, context) -> int:
     duration_key = query.data.replace("dur_", "")
     ud["settings"]["duration"] = duration_key
 
-    await query.edit_message_text("⏳ Генерирую сценарий... Это займёт несколько секунд.")
+    # Контроль лимита бесплатных сценариев
+    left = await free_scenarios_left(query.from_user.id, query.from_user.username)
+    if left is not None and left <= 0:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await send_paywall(context.bot, query.from_user.id)
+        return MAIN_MENU
+
+    model_key = await resolve_user_model(query.from_user.id, ud)
+    await query.edit_message_text(
+        f"⏳ Генерирую сценарий ({model_name(model_key)})... Это займёт несколько секунд."
+    )
 
     user_prompt = build_scenario_prompt(
         user_profile={
@@ -830,8 +1007,8 @@ async def choose_duration(update: Update, context) -> int:
         user_input=ud.get("user_input"),
     )
 
-    scenario = await stream_ai_to_chat(
-        context.bot, query.from_user.id,
+    scenario = await generate_scenario_with_model(
+        context.bot, query.from_user.id, model_key,
         SCENARIO_SYSTEM_PROMPT, user_prompt,
     )
 
@@ -844,6 +1021,7 @@ async def choose_duration(update: Update, context) -> int:
                 "target": ud["settings"].get("target"),
                 "duration": ud["settings"].get("duration"),
                 "from_user_input": bool(ud.get("user_input")),
+                "model": model_key,
             },
         )
     except Exception as e:
@@ -853,6 +1031,18 @@ async def choose_duration(update: Update, context) -> int:
         context.bot, query.from_user.id, scenario,
         reply_markup=after_scenario_keyboard(),
     )
+
+    # Напоминаем сколько бесплатных осталось
+    if left is not None:
+        remaining = max(0, left - 1)
+        if remaining > 0:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=f"🎁 Бесплатных сценариев осталось: *{remaining}*",
+                parse_mode="Markdown",
+            )
+        else:
+            await send_paywall(context.bot, query.from_user.id)
 
     return SHOW_SCENARIO
 
@@ -864,10 +1054,18 @@ async def after_scenario_handler(update: Update, context) -> int:
     ud = get_user(query.from_user.id)
 
     if query.data == "regenerate":
+        # regenerate тоже считается как генерация и тратит лимит
+        left = await free_scenarios_left(query.from_user.id, query.from_user.username)
+        if left is not None and left <= 0:
+            await query.edit_message_reply_markup(reply_markup=None)
+            await send_paywall(context.bot, query.from_user.id)
+            return SHOW_SCENARIO
+
         await query.edit_message_reply_markup(reply_markup=None)
+        model_key = await resolve_user_model(query.from_user.id, ud)
         await context.bot.send_message(
             chat_id=query.from_user.id,
-            text="⏳ Генерирую новый вариант сценария..."
+            text=f"⏳ Генерирую новый вариант ({model_name(model_key)})..."
         )
 
         user_prompt = build_scenario_prompt(
@@ -880,8 +1078,8 @@ async def after_scenario_handler(update: Update, context) -> int:
             user_input=ud.get("user_input"),
         )
 
-        scenario = await stream_ai_to_chat(
-            context.bot, query.from_user.id,
+        scenario = await generate_scenario_with_model(
+            context.bot, query.from_user.id, model_key,
             SCENARIO_SYSTEM_PROMPT, user_prompt,
         )
 
@@ -895,6 +1093,7 @@ async def after_scenario_handler(update: Update, context) -> int:
                     "duration": ud["settings"].get("duration"),
                     "from_user_input": bool(ud.get("user_input")),
                     "regenerate": True,
+                    "model": model_key,
                 },
             )
         except Exception as e:
@@ -904,6 +1103,17 @@ async def after_scenario_handler(update: Update, context) -> int:
             context.bot, query.from_user.id, scenario,
             reply_markup=after_scenario_keyboard(),
         )
+
+        if left is not None:
+            remaining = max(0, left - 1)
+            if remaining > 0:
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=f"🎁 Бесплатных сценариев осталось: *{remaining}*",
+                    parse_mode="Markdown",
+                )
+            else:
+                await send_paywall(context.bot, query.from_user.id)
         return SHOW_SCENARIO
 
     elif query.data == "show_course":
@@ -1309,6 +1519,9 @@ def main():
             ],
             CHOOSE_DURATION: [
                 CallbackQueryHandler(choose_duration, pattern=r"^dur_"),
+            ],
+            CHOOSE_MODEL: [
+                CallbackQueryHandler(choose_model, pattern=r"^model_"),
             ],
             SHOW_SCENARIO: [
                 CallbackQueryHandler(after_scenario_handler),

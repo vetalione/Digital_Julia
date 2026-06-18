@@ -96,16 +96,18 @@ async def init_db():
                 diagnosis_done_at TIMESTAMPTZ,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
+            ALTER TABLE user_profiles
+                ADD COLUMN IF NOT EXISTS preferred_model TEXT;
         """)
     logger.info("Database initialized")
 
 
 async def get_profile(telegram_user_id: int) -> dict | None:
-    """Возвращает сохранённый профиль юзера (ниша/продукт/ЦА) или None."""
+    """Возвращает сохранённый профиль юзера (ниша/продукт/ЦА/модель) или None."""
     if not pool:
         return None
     row = await pool.fetchrow(
-        """SELECT niche, product, audience, diagnosis_done_at
+        """SELECT niche, product, audience, diagnosis_done_at, preferred_model
            FROM user_profiles WHERE telegram_user_id = $1""",
         telegram_user_id,
     )
@@ -143,6 +145,43 @@ async def clear_profile(telegram_user_id: int) -> None:
         "DELETE FROM user_profiles WHERE telegram_user_id = $1",
         telegram_user_id,
     )
+
+
+async def set_preferred_model(telegram_user_id: int, model_key: str) -> None:
+    """Сохраняет выбранную юзером нейронку. Создаёт строку профиля если её нет."""
+    if not pool:
+        return
+    await pool.execute(
+        """INSERT INTO user_profiles (telegram_user_id, preferred_model, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (telegram_user_id) DO UPDATE SET
+             preferred_model = EXCLUDED.preferred_model,
+             updated_at = NOW()""",
+        telegram_user_id, model_key,
+    )
+
+
+async def get_preferred_model(telegram_user_id: int) -> str | None:
+    """Возвращает сохранённую нейронку юзера или None."""
+    if not pool:
+        return None
+    row = await pool.fetchrow(
+        "SELECT preferred_model FROM user_profiles WHERE telegram_user_id = $1",
+        telegram_user_id,
+    )
+    return row["preferred_model"] if row and row["preferred_model"] else None
+
+
+async def count_scenarios(telegram_user_id: int) -> int:
+    """Считает сколько сценариев сгенерировал юзер (для лимита бесплатных)."""
+    if not pool:
+        return 0
+    row = await pool.fetchrow(
+        """SELECT COUNT(*) AS cnt FROM events
+           WHERE telegram_user_id = $1 AND event_type = 'scenario_generated'""",
+        telegram_user_id,
+    )
+    return row["cnt"] if row else 0
 
 
 async def close_db():
