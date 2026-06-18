@@ -1508,11 +1508,13 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
-        # Состояние диалога живёт ТОЛЬКО в памяти процесса. После редеплоя
-        # все юзеры начинают с чистого листа через /start. Это сознательный трейд-офф:
-        # PicklePersistence + persistent=True приводило к "застрявшим" state после
-        # обновлений кода. user_data всё равно персистится (Application.persistence).
-        persistent=False,
+        # Состояние диалога переживает редеплой (хранится в PicklePersistence на
+        # volume /data). Это нужно, чтобы кнопки старых меню продолжали работать
+        # после обновления кода, а юзерам не приходилось заново жать /start.
+        # От "застрявших" состояний защищают allow_reentry=True (через /start всегда
+        # чистый вход) и команда /reset.
+        name="main_conversation",
+        persistent=True,
     )
 
     app.add_handler(conv)
