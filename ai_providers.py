@@ -17,19 +17,20 @@ from config import (
 logger = logging.getLogger(__name__)
 
 # Метаданные моделей для UI. Порядок = порядок кнопок.
+# Пользователю показываем только бренд (GPT / Claude / Gemini), без версий.
 MODELS = {
     "gpt": {
-        "name": "🤖 ChatGPT",
+        "name": "🤖 GPT",
         "provider": "openai",
         "model": OPENAI_MODEL,
     },
     "claude": {
-        "name": "🧠 Claude Opus 4.8",
+        "name": "🧠 Claude",
         "provider": "anthropic",
         "model": ANTHROPIC_MODEL,
     },
     "gemini": {
-        "name": "✨ Gemini 3 Pro",
+        "name": "✨ Gemini",
         "provider": "google",
         "model": GEMINI_MODEL,
     },
@@ -182,3 +183,86 @@ async def generate_scenario(model_key: str, system_prompt: str, user_prompt: str
         raise
 
     raise RuntimeError(f"Unknown provider for model {model_key}")
+
+
+# ── Стриминг (токен за токеном) ─────────────────────────────────────
+
+async def _stream_openai(system_prompt: str, user_prompt: str):
+    client = _get_openai()
+    if client is None:
+        raise RuntimeError("OpenAI API key not configured")
+    stream = await client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_completion_tokens=4000,
+        temperature=0.8,
+        stream=True,
+    )
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
+
+
+async def _stream_anthropic(system_prompt: str, user_prompt: str):
+    client = _get_anthropic()
+    if client is None:
+        raise RuntimeError("Anthropic API key not configured")
+    async with client.messages.stream(
+        model=ANTHROPIC_MODEL,
+        max_tokens=4000,
+        temperature=0.8,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    ) as stream:
+        async for text in stream.text_stream:
+            yield text
+
+
+async def _stream_gemini(system_prompt: str, user_prompt: str):
+    client = _get_gemini()
+    if client is None:
+        raise RuntimeError("Gemini API key not configured")
+    from google.genai import types
+    stream = await client.aio.models.generate_content_stream(
+        model=GEMINI_MODEL,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=0.8,
+            max_output_tokens=4000,
+        ),
+    )
+    async for chunk in stream:
+        if chunk.text:
+            yield chunk.text
+
+
+async def stream_generate(model_key: str, system_prompt: str, user_prompt: str):
+    """Async-генератор текстовых дельт выбранной нейросети.
+    Если провайдер падает ДО первого токена — откатываемся на OpenAI-стриминг."""
+    model_key = normalize_model(model_key)
+    provider = MODELS[model_key]["provider"]
+    gen_map = {
+        "openai": _stream_openai,
+        "anthropic": _stream_anthropic,
+        "google": _stream_gemini,
+    }
+    gen = gen_map[provider]
+    started = False
+    try:
+        async for delta in gen(system_prompt, user_prompt):
+            started = True
+            yield delta
+    except Exception as e:
+        logger.error(f"Streaming failed with {model_key} ({provider}): {e}")
+        # Откат на OpenAI только если ещё ничего не отдали юзеру
+        if not started and provider != "openai" and OPENAI_API_KEY:
+            logger.info("Falling back to OpenAI streaming")
+            async for delta in _stream_openai(system_prompt, user_prompt):
+                yield delta
+        elif not started:
+            raise
+        # если стрим уже начался — прерываемся с тем, что успели сгенерировать

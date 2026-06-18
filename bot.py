@@ -52,8 +52,8 @@ from db import (
     set_preferred_model, get_preferred_model, count_scenarios,
 )
 from ai_providers import (
-    MODELS, DEFAULT_MODEL, available_models, model_name,
-    normalize_model, generate_scenario,
+    DEFAULT_MODEL, available_models, model_name,
+    normalize_model, stream_generate,
 )
 from receipt_validator import validate_receipt, image_sha256
 from admin_stats import is_admin, stats_command_pay, stats_command_usage
@@ -313,42 +313,34 @@ async def call_ai(system_prompt: str, user_prompt: str) -> str:
         return "⚠️ Произошла ошибка при генерации. Попробуйте ещё раз."
 
 
-async def stream_ai_to_chat(bot, chat_id: int, system_prompt: str, user_prompt: str) -> str:
-    """Стримит ответ GPT в чат через sendMessageDraft, возвращает финальный текст."""
+async def stream_ai_to_chat(
+    bot, chat_id: int, system_prompt: str, user_prompt: str,
+    model_key: str = DEFAULT_MODEL,
+) -> str:
+    """Стримит ответ выбранной нейросети (GPT/Claude/Gemini) в чат через
+    sendMessageDraft (живое появление текста), возвращает финальный текст."""
     draft_id = random.randint(1, 2**31 - 1)
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessageDraft"
 
+    accumulated = ""
+    last_update_time = 0.0
+
     try:
-        stream = await async_client.chat.completions.create(
-            model="gpt-5.4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_completion_tokens=4000,
-            temperature=0.8,
-            stream=True,
-        )
-
-        accumulated = ""
-        last_update_time = 0.0
-
         async with aiohttp.ClientSession() as session:
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    accumulated += chunk.choices[0].delta.content
+            async for delta in stream_generate(model_key, system_prompt, user_prompt):
+                accumulated += delta
 
-                    now = time.time()
-                    if now - last_update_time >= 0.5 and len(accumulated) > 20:
-                        try:
-                            await session.post(api_url, json={
-                                "chat_id": chat_id,
-                                "draft_id": draft_id,
-                                "text": accumulated[:4096],
-                            })
-                            last_update_time = now
-                        except Exception as e:
-                            logger.debug(f"Draft update failed: {e}")
+                now = time.time()
+                if now - last_update_time >= 0.5 and len(accumulated) > 20:
+                    try:
+                        await session.post(api_url, json={
+                            "chat_id": chat_id,
+                            "draft_id": draft_id,
+                            "text": accumulated[:4096],
+                        })
+                        last_update_time = now
+                    except Exception as e:
+                        logger.debug(f"Draft update failed: {e}")
 
         if not accumulated:
             return "Не удалось сгенерировать ответ."
@@ -356,31 +348,18 @@ async def stream_ai_to_chat(bot, chat_id: int, system_prompt: str, user_prompt: 
         return clean_md_for_telegram(strip_followup(accumulated))
 
     except Exception as e:
-        logger.error(f"OpenAI streaming error: {e}")
-        # Фоллбэк на обычный вызов без стриминга
+        logger.error(f"Streaming error ({model_key}): {e}")
+        # Финальный фоллбэк — обычный (нестриминговый) вызов GPT
         return await call_ai(system_prompt, user_prompt)
 
 
 async def generate_scenario_with_model(
     bot, chat_id: int, model_key: str, system_prompt: str, user_prompt: str
 ) -> str:
-    """Генерирует сценарий выбранной нейросетью.
-    Для GPT используем стриминг в чат (через Telegram draft), для остальных —
-    обычная генерация с индикатором ожидания."""
-    model_key = normalize_model(model_key)
-    if MODELS.get(model_key, {}).get("provider") == "openai":
-        return await stream_ai_to_chat(bot, chat_id, system_prompt, user_prompt)
-
-    # Claude / Gemini — без стриминга
-    try:
-        raw = await generate_scenario(model_key, system_prompt, user_prompt)
-        if not raw:
-            return "Не удалось сгенерировать ответ."
-        return clean_md_for_telegram(strip_followup(raw))
-    except Exception as e:
-        logger.error(f"generate_scenario_with_model error ({model_key}): {e}")
-        # Финальный фоллбэк на GPT-стриминг
-        return await stream_ai_to_chat(bot, chat_id, system_prompt, user_prompt)
+    """Генерирует сценарий выбранной нейросетью со стримингом в чат."""
+    return await stream_ai_to_chat(
+        bot, chat_id, system_prompt, user_prompt, model_key=model_key
+    )
 
 
 async def search_news(user_prompt: str) -> str:

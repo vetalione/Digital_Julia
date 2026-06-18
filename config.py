@@ -10,8 +10,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # Модели нейросетей для генерации сценариев
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro-latest")
 
 # Сколько бесплатных сценариев доступно до оплаты
 FREE_SCENARIO_LIMIT = int(os.getenv("FREE_SCENARIO_LIMIT", "3"))
