@@ -46,7 +46,7 @@ from prompts import (
     build_scenario_prompt,
 )
 from db import (
-    init_db, close_db, check_access, get_access_until, log_visit,
+    init_db, close_db, check_access, get_access_until, log_visit, visitor_exists,
     grant_access, get_receipt_by_hash, save_receipt_upload, log_pay_click,
     log_event, get_profile, save_profile, clear_profile,
     set_preferred_model, get_preferred_model, count_scenarios,
@@ -478,6 +478,36 @@ async def require_access(update: Update) -> bool:
 async def start(update: Update, context) -> int:
     """Приветствие и начало диагностики."""
     user = update.effective_user
+
+    # Проект закрыт: новеньких, кто заходит впервые и ещё не оплачивал,
+    # дальше не пускаем. Проверяем ДО log_visit, чтобы отличить новичка.
+    try:
+        is_new_visitor = not await visitor_exists(user.id)
+    except Exception as e:
+        logger.warning(f"visitor_exists failed: {e}")
+        is_new_visitor = False
+
+    if is_new_visitor:
+        try:
+            has_access = await check_access(user.id, user.username)
+        except Exception as e:
+            logger.warning(f"check_access in start failed: {e}")
+            has_access = False
+        if not has_access:
+            # Всё равно фиксируем визит для статистики
+            try:
+                await log_visit(
+                    telegram_user_id=user.id,
+                    telegram_username=user.username,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    language_code=user.language_code,
+                )
+            except Exception as e:
+                logger.warning(f"log_visit failed: {e}")
+            await update.message.reply_text("Проект закрыт")
+            return ConversationHandler.END
+
     # Логируем визит для будущих рассылок
     try:
         await log_visit(

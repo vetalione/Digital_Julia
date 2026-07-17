@@ -302,6 +302,18 @@ async def revoke_access(purchase_id: int):
     logger.info(f"Access revoked: purchase={purchase_id}")
 
 
+async def visitor_exists(telegram_user_id: int) -> bool:
+    """Проверяет, заходил ли юзер в бота раньше (есть ли запись в bot_visitors).
+    Вызывать ДО log_visit, чтобы отличить новичка от возвращающегося."""
+    if not pool:
+        return False
+    row = await pool.fetchrow(
+        "SELECT 1 FROM bot_visitors WHERE telegram_user_id = $1",
+        telegram_user_id,
+    )
+    return row is not None
+
+
 async def log_visit(
     telegram_user_id: int,
     telegram_username: str | None = None,
